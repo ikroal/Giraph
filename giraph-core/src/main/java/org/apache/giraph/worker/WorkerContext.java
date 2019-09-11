@@ -18,11 +18,6 @@
 
 package org.apache.giraph.worker;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
-import java.util.List;
-
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.requests.SendWorkerToWorkerMessageRequest;
 import org.apache.giraph.graph.GraphState;
@@ -30,9 +25,15 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+import java.util.List;
+
 /**
  * WorkerContext allows for the execution of user code
  * on a per-worker basis. There's one WorkerContext per worker.
+ * 用户实现？生命周期回调？例如 {@link #postSuperstep()} 等
  */
 @SuppressWarnings("rawtypes")
 public abstract class WorkerContext

@@ -22,6 +22,7 @@ import com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.commons.io.FileUtils;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.graph.GraphTaskManager;
 import org.apache.giraph.time.SystemTime;
 import org.apache.giraph.time.Time;
 import org.apache.hadoop.conf.Configuration;
@@ -227,6 +228,10 @@ public class ZooKeeperManager {
               ZOOKEEPER_MANAGER_DIRECTORY.getKey(), e);
     }
 
+
+    /**
+     * @see this#createZooKeeperServerList() 与该函数相关，zkServerTask 就是 taskPartition=0
+     */
     Path myCandidacyPath = new Path(
         taskDirectory, myHostname +
         HOSTNAME_TASK_SEPARATOR + taskPartition);
@@ -298,6 +303,7 @@ public class ZooKeeperManager {
   /**
    * Task 0 will call this to create the ZooKeeper server list.  The result is
    * a file that describes the ZooKeeper servers through the filename.
+   * 仅 Task0 可以运行
    *
    * @throws IOException
    * @throws InterruptedException
@@ -307,8 +313,11 @@ public class ZooKeeperManager {
     String host;
     String task;
     while (true) {
+      //返回 Task 下文件的元数据，会有一个文件名格式校验的过程，会去掉以 . 开头和 crc 结尾文件
       FileStatus [] fileStatusArray = fs.listStatus(taskDirectory);
       if (fileStatusArray.length > 0) {
+        //会不会出现多个 fileStatus，测试了一下多个的情况下顺序无法保证，那么 task 不一定是 0
+        // ，也就无法正确标识 Zookeeper 在哪，需要进一步验证，可能是调用的时候只有 Task0 创建成功了文件
         FileStatus fileStatus = fileStatusArray[0];
         String[] hostnameTaskArray =
             fileStatus.getPath().getName().split(
@@ -331,6 +340,7 @@ public class ZooKeeperManager {
       LOG.info("createZooKeeperServerList: Creating the final " +
           "ZooKeeper file '" + serverListPath + "'");
     }
+    //master 会创建所有 worker 都可以访问的一个文件，该文件表明哪个 taskPartition 是 master
     fs.createNewFile(serverListPath);
   }
 
@@ -365,7 +375,9 @@ public class ZooKeeperManager {
       InterruptedException {
     String serverListFile;
 
+    //0 默认是 master，也就是说只有 master 才能创建 ZooKeeperServerList
     if (taskPartition == 0) {
+      //有外部 Zookeeper 时不为空，没有则为空
       serverListFile = getServerListFile();
       if (serverListFile == null) {
         createZooKeeperServerList();
@@ -403,6 +415,10 @@ public class ZooKeeperManager {
 
     zkServerHost = serverHostList[0];
     zkServerTask = Integer.parseInt(serverHostList[1]);
+    /**
+     * 各个 Task 更新自己的 zkServerPortString
+     * @see GraphTaskManager#getZookeeperList() 有关
+     */
     updateZkPortString();
   }
 
@@ -475,6 +491,7 @@ public class ZooKeeperManager {
       generateZooKeeperConfig();
       synchronized (this) {
         zkRunner = createRunner();
+        //启动 Zookeeper 服务器
         int port = zkRunner.start(zkDir, config);
         if (port > 0) {
           zkBasePort = port;
@@ -497,6 +514,7 @@ public class ZooKeeperManager {
                 myHostname + ":" + zkBasePort +
                 " with poll msecs = " + pollMsecs);
           }
+          //测试连接是否成功
           InetSocketAddress zkServerAddress =
               new InetSocketAddress(myHostname, zkBasePort);
           Socket testServerSock = new Socket();
@@ -505,6 +523,7 @@ public class ZooKeeperManager {
             LOG.info("onlineZooKeeperServers: Connected to " +
                 zkServerAddress + "!");
           }
+          //出错时不会走这一步，而是去 catch 部分了
           break;
         } catch (SocketTimeoutException e) {
           LOG.warn("onlineZooKeeperServers: Got " +
@@ -545,14 +564,17 @@ public class ZooKeeperManager {
             "task failed) to create filestamp " + myReadyPath, e);
       }
     } else {
+      //worker 查看 Zookeeper 启动成功没有
       int readyRetrievalAttempt = 0;
       String foundServer = null;
       while (true) {
         try {
           FileStatus [] fileStatusArray =
               fs.listStatus(serverDirectory);
+          //检查是否生成了所需文件
           if ((fileStatusArray != null) &&
               (fileStatusArray.length > 0)) {
+            //读取上面 master 创建的文件名获得 Zookeeper 信息
             for (int i = 0; i < fileStatusArray.length; ++i) {
               String[] hostnameTaskArray =
                   fileStatusArray[i].getPath().getName().split(
@@ -575,6 +597,7 @@ public class ZooKeeperManager {
                   pollMsecs + ") on attempt " +
                   readyRetrievalAttempt);
             }
+            //查看 hostname 是否相同
             if (zkServerHost.equals(foundServer)) {
               break;
             }

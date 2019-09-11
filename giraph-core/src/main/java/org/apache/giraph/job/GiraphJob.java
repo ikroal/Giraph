@@ -284,6 +284,7 @@ public class GiraphJob {
 
       jobObserver.jobFinished(submittedJob, passed);
 
+      //如果没有通过则会尝试重启 Job ，默认情况下不会重启
       if (!passed) {
         String restartFrom = retryChecker.shouldRestartCheckpoint(submittedJob);
         if (restartFrom != null) {

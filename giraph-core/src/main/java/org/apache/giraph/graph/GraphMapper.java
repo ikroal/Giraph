@@ -85,6 +85,7 @@ public class GraphMapper<I extends WritableComparable, V extends Writable,
     // waiting for ZooKeeper to timeout and delete the ephemeral znodes
     try {
       setup(context);
+      //什么情况下会执行多次？
       while (context.nextKeyValue()) {
         graphTaskManager.execute();
       }
@@ -100,6 +101,7 @@ public class GraphMapper<I extends WritableComparable, V extends Writable,
           "Exception occurred on mapper " +
               graphTaskManager.getConf().getTaskPartition() + ": " +
               ExceptionUtils.getStackTrace(e), exByteArray);
+      //重要的调用
       graphTaskManager.zooKeeperCleanup();
       graphTaskManager.workerFailureCleanup();
       throw new IllegalStateException(

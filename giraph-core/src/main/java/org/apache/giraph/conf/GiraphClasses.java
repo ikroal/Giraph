@@ -150,10 +150,15 @@ public class GiraphClasses<I extends WritableComparable,
    */
   public GiraphClasses(Configuration conf) {
     giraphTypes = GiraphTypes.readFrom(conf);
+    /**
+     * @see COMPUTATION_FACTORY_CLASS 设置了默认值，没有设置查询时会查询到 null 值
+     * ，则返回默认值 DefaultComputationFactory。工厂模式需要查看
+     */
     computationFactoryClass =
         (Class<? extends ComputationFactory<I, V, E,
             ? extends Writable, ? extends Writable>>)
             COMPUTATION_FACTORY_CLASS.get(conf);
+    //用户编写程序时指定
     computationClass =
         (Class<? extends Computation<I, V, E,
             ? extends Writable, ? extends Writable>>)
@@ -164,6 +169,7 @@ public class GiraphClasses<I extends WritableComparable,
     inputOutEdgesClass = (Class<? extends OutEdges<I, E>>)
         INPUT_VERTEX_EDGES_CLASS.getWithDefault(conf, outEdgesClass);
 
+    //分区的工厂类，默认为 HashPartitionerFactory
     graphPartitionerFactoryClass =
         (Class<? extends GraphPartitionerFactory<I, V, E>>)
             GRAPH_PARTITIONER_FACTORY_CLASS.get(conf);

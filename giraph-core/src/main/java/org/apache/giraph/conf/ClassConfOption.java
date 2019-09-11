@@ -57,7 +57,7 @@ public class ClassConfOption<C> extends AbstractConfOption {
    *
    * @param key key
    * @param defaultClass default class
-   * @param interfaceClass interface class
+   * @param interfaceClass interface class 可能用来判定是不是该接口的实现类？
    * @param description configuration description
    * @param <T> type of class
    * @return ClassConfOption

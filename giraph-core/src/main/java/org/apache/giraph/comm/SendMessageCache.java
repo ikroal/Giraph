@@ -18,11 +18,6 @@
 
 package org.apache.giraph.comm;
 
-import static org.apache.giraph.conf.GiraphConstants.ADDITIONAL_MSG_REQUEST_SIZE;
-import static org.apache.giraph.conf.GiraphConstants.MAX_MSG_REQUEST_SIZE;
-
-import java.util.Iterator;
-
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.netty.NettyWorkerClientRequestProcessor;
 import org.apache.giraph.comm.requests.SendWorkerMessagesRequest;
@@ -39,6 +34,11 @@ import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.log4j.Logger;
+
+import java.util.Iterator;
+
+import static org.apache.giraph.conf.GiraphConstants.ADDITIONAL_MSG_REQUEST_SIZE;
+import static org.apache.giraph.conf.GiraphConstants.MAX_MSG_REQUEST_SIZE;
 
 /**
  * Aggregates the messages to be sent to workers so they can be sent
@@ -149,8 +149,10 @@ public class SendMessageCache<I extends WritableComparable, M extends Writable>
    * @param message The message sent to the target
    */
   public void sendMessageRequest(I destVertexId, M message) {
+    //通过 vertex ID 获得分区信息
     PartitionOwner owner =
       getServiceWorker().getVertexPartitionOwner(destVertexId);
+    //通过分区信息得到 worker 信息
     WorkerInfo workerInfo = owner.getWorkerInfo();
     final int partitionId = owner.getPartitionId();
     if (LOG.isTraceEnabled()) {
@@ -159,6 +161,9 @@ public class SendMessageCache<I extends WritableComparable, M extends Writable>
     }
     ++totalMsgsSentInSuperstep;
     // Add the message to the cache
+    /**
+     * {@link ByteArrayVertexIdMessages#add}
+     */
     int workerMessageSize = addMessage(
       workerInfo, partitionId, destVertexId, message);
     // Send a request if the cache of outgoing message to

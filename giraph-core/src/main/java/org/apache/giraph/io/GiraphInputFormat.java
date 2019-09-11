@@ -82,8 +82,12 @@ public abstract class GiraphInputFormat<I extends WritableComparable,
   public InputSplit readInputSplit(DataInput dataInput) throws IOException,
       ClassNotFoundException {
     String inputSplitClass = Text.readString(dataInput);
+    /**
+     * {@link org.apache.hadoop.mapreduce.lib.input.FileSplit}
+     */
     InputSplit inputSplit = (InputSplit) ReflectionUtils.newInstance(
             getConf().getClassByName(inputSplitClass), getConf());
+    //反序列化
     ((Writable) inputSplit).readFields(dataInput);
     return inputSplit;
   }

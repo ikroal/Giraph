@@ -96,6 +96,10 @@ public class WorkerInputSplitsHandler {
    */
   public byte[] reserveInputSplit(InputType splitType, boolean isFirstSplit) {
     // Send request
+    /**
+     * 将会调用 {@link org.apache.giraph.master.input.MasterInputSplitsHandler#sendSplitTo}
+     * master 将会回调{@link org.apache.giraph.comm.requests.ReplyWithInputSplitRequest#doRequest}
+     */
     workerClient.sendWritableRequest(masterTaskId,
         new AskForInputSplitRequest(
             splitType, workerInfo.getTaskId(), isFirstSplit));

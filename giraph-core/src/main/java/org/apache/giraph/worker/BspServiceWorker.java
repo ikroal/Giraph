@@ -18,25 +18,8 @@
 
 package org.apache.giraph.worker;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
-
+import com.google.common.collect.Lists;
 import net.iharder.Base64;
-
 import org.apache.giraph.bsp.ApplicationState;
 import org.apache.giraph.bsp.BspService;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
@@ -56,42 +39,20 @@ import org.apache.giraph.comm.requests.PartitionStatsRequest;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
-import org.apache.giraph.graph.AddressesAndPartitionsWritable;
-import org.apache.giraph.graph.FinishedSuperstepStats;
-import org.apache.giraph.graph.GlobalStats;
-import org.apache.giraph.graph.GraphTaskManager;
-import org.apache.giraph.graph.Vertex;
-import org.apache.giraph.graph.VertexEdgeCount;
+import org.apache.giraph.graph.*;
 import org.apache.giraph.io.EdgeOutputFormat;
 import org.apache.giraph.io.EdgeWriter;
 import org.apache.giraph.io.VertexOutputFormat;
 import org.apache.giraph.io.VertexWriter;
 import org.apache.giraph.io.superstep_output.SuperstepOutput;
 import org.apache.giraph.mapping.translate.TranslateEdge;
+import org.apache.giraph.master.BspServiceMaster;
 import org.apache.giraph.master.MasterInfo;
 import org.apache.giraph.master.SuperstepClasses;
-import org.apache.giraph.metrics.GiraphMetrics;
-import org.apache.giraph.metrics.GiraphTimer;
-import org.apache.giraph.metrics.GiraphTimerContext;
-import org.apache.giraph.metrics.ResetSuperstepMetricsObserver;
-import org.apache.giraph.metrics.SuperstepMetricsRegistry;
-import org.apache.giraph.metrics.WorkerSuperstepMetrics;
+import org.apache.giraph.metrics.*;
 import org.apache.giraph.ooc.OutOfCoreEngine;
-import org.apache.giraph.partition.Partition;
-import org.apache.giraph.partition.PartitionExchange;
-import org.apache.giraph.partition.PartitionOwner;
-import org.apache.giraph.partition.PartitionStats;
-import org.apache.giraph.partition.PartitionStore;
-import org.apache.giraph.partition.WorkerGraphPartitioner;
-import org.apache.giraph.utils.BlockingElementsSet;
-import org.apache.giraph.utils.CallableFactory;
-import org.apache.giraph.utils.CheckpointingUtils;
-import org.apache.giraph.utils.JMapHistoDumper;
-import org.apache.giraph.utils.LoggerUtils;
-import org.apache.giraph.utils.MemoryUtils;
-import org.apache.giraph.utils.ProgressableUtils;
-import org.apache.giraph.utils.ReactiveJMapHistoDumper;
-import org.apache.giraph.utils.WritableUtils;
+import org.apache.giraph.partition.*;
+import org.apache.giraph.utils.*;
 import org.apache.giraph.zk.BspEvent;
 import org.apache.giraph.zk.PredicateLock;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -115,7 +76,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.google.common.collect.Lists;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.Charset;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * ZooKeeper-based implementation of {@link CentralizedServiceWorker}.
@@ -202,37 +171,58 @@ public class BspServiceWorker<I extends WritableComparable,
     throws IOException, InterruptedException {
     super(context, graphTaskManager);
     ImmutableClassesGiraphConfiguration<I, V, E> conf = getConfiguration();
+    //用来保存每个 Worker 的本地信息
     localData = new LocalData<>(conf);
+    //默认下返回 null
     translateEdge = getConfiguration().edgeTranslationInstance();
     if (translateEdge != null) {
       translateEdge.initialize(this);
     }
+    //事件注册
     partitionExchangeChildrenChanged = new PredicateLock(context);
     registerBspEvent(partitionExchangeChildrenChanged);
+    /**
+     * 与 {@link MasterGraphPartitionerImpl} 相对应
+     * 与 {@link PartitionOwner} 相关
+     */
     workerGraphPartitioner =
         getGraphPartitionerFactory().createWorkerGraphPartitioner();
     workerInfo = new WorkerInfo();
+    //启动 netty 服务，应该用来接收 message
     workerServer = new NettyWorkerServer<I, V, E>(conf, this, context,
         graphTaskManager.createUncaughtExceptionHandler());
+    //设置 workerInfo
     workerInfo.setInetSocketAddress(workerServer.getMyAddress(),
         workerServer.getLocalHostOrIp());
     workerInfo.setTaskId(getTaskId());
+    //Netty 客户端，应该用来发送 message
     workerClient = new NettyWorkerClient<I, V, E>(context, conf, this,
         graphTaskManager.createUncaughtExceptionHandler());
+    //流控制 干啥的？
     workerServer.setFlowControl(workerClient.getFlowControl());
     OutOfCoreEngine oocEngine = workerServer.getServerData().getOocEngine();
     if (oocEngine != null) {
       oocEngine.setFlowControl(workerClient.getFlowControl());
     }
 
+    //Aggregator 相关
     workerAggregatorRequestProcessor =
         new NettyWorkerAggregatorRequestProcessor(getContext(), conf, this);
 
+    /**
+     * 处理 Aggregator 与 {@link org.apache.giraph.master.MasterAggregatorHandler} 对应
+     */
     globalCommHandler = new WorkerAggregatorHandler(this, conf, context);
 
+    /**
+     * {@link DefaultWorkerContext}
+     */
     workerContext = conf.createWorkerContext();
     workerContext.setWorkerGlobalCommUsage(globalCommHandler);
 
+    /**
+     * {@link NoOpSuperstepOutput}
+     */
     superstepOutput = conf.createSuperstepOutput(context);
 
     if (conf.isJMapHistogramDumpEnabled()) {
@@ -241,15 +231,21 @@ public class BspServiceWorker<I extends WritableComparable,
     if (conf.isReactiveJmapHistogramDumpEnabled()) {
       conf.addWorkerObserverClass(ReactiveJMapHistoDumper.class);
     }
+    //观察者，默认情况下没有
     observers = conf.createWorkerObservers(context);
 
+    /**
+     * 与 {@link org.apache.giraph.master.MasterProgress} 作用相同，报告进度
+     */
     WorkerProgress.get().setTaskId(getTaskId());
+    //默认情况下为 null，只有开启追踪之后才会创建对象，作用是周期性向 Zookeeper 写进度信息
     workerProgressWriter = conf.trackJobProgressOnClient() ?
         new WorkerProgressWriter(graphTaskManager.getJobProgressTracker()) :
         null;
 
     GiraphMetrics.get().addSuperstepResetObserver(this);
 
+    //作用暂时不知
     inputSplitsHandler = new WorkerInputSplitsHandler(
         workerInfo, masterInfo.getTaskId(), workerClient);
 
@@ -326,6 +322,7 @@ public class BspServiceWorker<I extends WritableComparable,
           " threads(s)");
     }
 
+    //通过工厂类创建 callable，然后通过线程池执行 callable 获取结果
     List<VertexEdgeCount> results =
         ProgressableUtils.getResultsWithNCallables(inputSplitsCallableFactory,
             numThreads, "load-%d", getContext());
@@ -370,6 +367,7 @@ public class BspServiceWorker<I extends WritableComparable,
    */
   private VertexEdgeCount loadVertices() throws KeeperException,
       InterruptedException {
+    //创建工厂类
     VertexInputSplitsCallableFactory<I, V, E> inputSplitsCallableFactory =
         new VertexInputSplitsCallableFactory<I, V, E>(
             getConfiguration().createWrappedVertexInputFormat(),
@@ -434,6 +432,7 @@ public class BspServiceWorker<I extends WritableComparable,
     while (true) {
       Stat inputSplitsDoneStat;
       try {
+        //检测 Zookeeper 下是否已经创建了对应的目录
         inputSplitsDoneStat =
             getZkExt().exists(inputSplitsAllDonePath, true);
       } catch (KeeperException e) {
@@ -464,12 +463,19 @@ public class BspServiceWorker<I extends WritableComparable,
     // 4. Wait until the INPUT_SPLIT_ALL_DONE_PATH node has been created
     // 5. Process any mutations deriving from add edge requests
     // 6. Wait for superstep INPUT_SUPERSTEP to complete.
+    /**不相等证明出现了重启，完成 checkpoint 载入，该步判断是针对构造函数中可能设置的 restartedSuperstep
+     * {@link BspService#BspService}
+     */
     if (getRestartedSuperstep() != UNSET_SUPERSTEP) {
       setCachedSuperstep(getRestartedSuperstep());
       return new FinishedSuperstepStats(0, false, 0, 0, true,
           CheckpointStatus.NONE);
     }
 
+    /**
+     * 通过 Zookeeper 获取 master 设置的 jobState，然后判断是否需要重启
+     * 与 {@link org.apache.giraph.master.BspServiceMaster#becomeMaster} 中相对应
+     */
     JSONObject jobState = getJobState();
     if (jobState != null) {
       try {
@@ -477,12 +483,15 @@ public class BspServiceWorker<I extends WritableComparable,
             ApplicationState.START_SUPERSTEP) &&
             jobState.getLong(JSONOBJ_SUPERSTEP_KEY) ==
             getSuperstep()) {
+          //getSuperstep 是否有问题？从逻辑上看它不可能获得最近做 checkpoint 的超步值，
+          // 所以无法进行恢复
           if (LOG.isInfoEnabled()) {
             LOG.info("setup: Restarting from an automated " +
                 "checkpointed superstep " +
                 getSuperstep() + ", attempt " +
                 getApplicationAttempt());
           }
+          //上一轮超步没有正常结束，需要从 checkpoint 载入
           setRestartedSuperstep(getSuperstep());
           return new FinishedSuperstepStats(0, false, 0, 0, true,
               CheckpointStatus.NONE);
@@ -495,25 +504,34 @@ public class BspServiceWorker<I extends WritableComparable,
     }
 
     // Add the partitions that this worker owns
+    //从 master 接收之后，拿到 PartitionOwner
     Collection<? extends PartitionOwner> masterSetPartitionOwners =
         startSuperstep();
+    //将从 master 获取的 PartitionOwner 加入 workerGraphPartitioner 的 PartitionOwner 集合中
     workerGraphPartitioner.updatePartitionOwners(
         getWorkerInfo(), masterSetPartitionOwners);
+    /**
+     * {@link org.apache.giraph.ooc.data.DiskBackedPartitionStore}
+     * 作用暂时不知道。。
+     */
     getPartitionStore().initialize();
 
 /*if[HADOOP_NON_SECURE]
     workerClient.setup();
 else[HADOOP_NON_SECURE]*/
+    //与其它 worker 和 master 建立网络连接
     workerClient.setup(getConfiguration().authenticate());
 /*end[HADOOP_NON_SECURE]*/
 
     // Initialize aggregator at worker side during setup.
     // Do this just before vertex and edge loading.
+    //处理来自 master 和 worker 的 aggregator 值
     globalCommHandler.prepareSuperstep(workerAggregatorRequestProcessor);
 
     VertexEdgeCount vertexEdgeCount;
     long entriesLoaded;
 
+    //作用暂时不知 MappingInputFormat 后续再看
     if (getConfiguration().hasMappingInputFormat()) {
       getContext().progress();
       try {
@@ -540,8 +558,10 @@ else[HADOOP_NON_SECURE]*/
     }
 
     if (getConfiguration().hasVertexInputFormat()) {
+      //判断是否设置 vertexInputFormatClass
       getContext().progress();
       try {
+        //通过线程池启动线程载入顶点，并返回载入的顶点和边的个数
         vertexEdgeCount = loadVertices();
       } catch (InterruptedException e) {
         throw new IllegalStateException(
@@ -575,10 +595,15 @@ else[HADOOP_NON_SECURE]*/
       LOG.info("setup: Finally loaded a total of " + vertexEdgeCount);
     }
 
+    //标记当前 worker 完成读取工作，并等待其它 worker 完成
     markCurrentWorkerDoneReadingThenWaitForOthers();
 
     // Create remaining partitions owned by this worker.
+    /**
+     * PartitionStore 的添加在 {@link org.apache.giraph.comm.requests.SendWorkerVerticesRequest#doRequest} 中完成
+     */
     for (PartitionOwner partitionOwner : masterSetPartitionOwners) {
+      //相等证明是当前 worker 负责的分区
       if (partitionOwner.getWorkerInfo().equals(getWorkerInfo()) &&
           !getPartitionStore().hasPartition(
               partitionOwner.getPartitionId())) {
@@ -599,6 +624,7 @@ else[HADOOP_NON_SECURE]*/
 
     // Generate the partition stats for the input superstep and process
     // if necessary
+    //创建 Partition 状态
     List<PartitionStats> partitionStatsList =
         new ArrayList<PartitionStats>();
     PartitionStore<I, V, E> partitionStore = getPartitionStore();
@@ -631,6 +657,7 @@ else[HADOOP_NON_SECURE]*/
     hostnamePort.put(workerInfo.getPort());
 
     String myHealthPath = null;
+    //默认情况下一直为 true
     if (isHealthy()) {
       myHealthPath = getWorkerInfoHealthyPath(getApplicationAttempt(),
           getSuperstep());
@@ -712,8 +739,11 @@ else[HADOOP_NON_SECURE]*/
       workerServer.prepareSuperstep();
     }
 
+    //注册健康节点，创建 Zookeeper 创建目录
     registerHealth(getSuperstep());
 
+    //元素的来源是 addressesAndPartitionsReceived 方法，从 master 接收
+    //具体过程需要查看 netty 连接使用，以及了解 master 和 worker 建立连接过程
     AddressesAndPartitionsWritable addressesAndPartitions =
         addressesAndPartitionsHolder.getElement(getContext());
 
@@ -773,12 +803,15 @@ else[HADOOP_NON_SECURE]*/
       localVertices += partitionStats.getVertexCount();
     }
 
+    //不是初始超步的话，就回调一些超步结束之后的接口
     if (getSuperstep() != INPUT_SUPERSTEP) {
       postSuperstepCallbacks();
     }
 
+    //Send aggregators to their owners and in the end to the master
     globalCommHandler.finishSuperstep(workerAggregatorRequestProcessor);
 
+    //处理到来的消息队列
     MessageStore<I, Writable> incomingMessageStore =
         getServerData().getIncomingMessageStore();
     if (incomingMessageStore instanceof AsyncMessageStoreWrapper) {
@@ -795,6 +828,7 @@ else[HADOOP_NON_SECURE]*/
     if (superstepTimerContext != null) {
       superstepTimerContext.stop();
     }
+    //向 Zookeeper 写超步结束的信息，master 会接收到 partitionStatsList 然后统计完成计算的顶点数目
     writeFinshedSuperstepInfoToZK(partitionStatsList,
       workerSentMessages, workerSentMessageBytes);
 
@@ -808,11 +842,13 @@ else[HADOOP_NON_SECURE]*/
     String superstepFinishedNode =
         getSuperstepFinishedPath(getApplicationAttempt(), getSuperstep());
 
+    //等待其它 Worker 结束超步，如果其它 worker 出问题则会抛出异常
     waitForOtherWorkers(superstepFinishedNode);
 
     GlobalStats globalStats = new GlobalStats();
     SuperstepClasses superstepClasses = SuperstepClasses.createToRead(
         getConfiguration());
+    //从 Zookeeper 获取全局状态和 SuperstepClasses
     WritableUtils.readFieldsFromZnode(
         getZkExt(), superstepFinishedNode, false, null, globalStats,
         superstepClasses);
@@ -825,6 +861,7 @@ else[HADOOP_NON_SECURE]*/
         getGraphTaskManager().getGraphFunctions().toString() +
         " - Attempt=" + getApplicationAttempt() +
         ", Superstep=" + getSuperstep());
+    //当前超步 +1
     incrCachedSuperstep();
     getConfiguration().updateSuperstepClasses(superstepClasses);
 
@@ -873,6 +910,9 @@ else[HADOOP_NON_SECURE]*/
    */
   private void waitForOtherWorkers(String superstepFinishedNode) {
     try {
+      /**
+       * {@link BspServiceMaster#coordinateSuperstep} 只有所有 worker 正常结束之后才会创建该目录
+       */
       while (getZkExt().exists(superstepFinishedNode, true) == null) {
         getSuperstepFinishedEvent().waitForTimeoutOrFail(
             GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
@@ -1257,10 +1297,14 @@ else[HADOOP_NON_SECURE]*/
 
     // Algorithm:
     // For each partition, dump vertices and messages
+    //各种存储路径
+    //元数据
     Path metadataFilePath = createCheckpointFilePathSafe(
         CheckpointingUtils.CHECKPOINT_METADATA_POSTFIX);
+    //用于标记 checkpoint 文件是否有效？暂时没有看到其进行使用，暂时判断为无用
     Path validFilePath = createCheckpointFilePathSafe(
         CheckpointingUtils.CHECKPOINT_VALID_POSTFIX);
+    //worker Context 和 aggregator 数据
     Path checkpointFilePath = createCheckpointFilePathSafe(
         CheckpointingUtils.CHECKPOINT_DATA_POSTFIX);
 
@@ -1269,13 +1313,15 @@ else[HADOOP_NON_SECURE]*/
     // needs to know how many partitions this worker owns
     FSDataOutputStream metadataOutputStream =
         getFs().create(metadataFilePath);
+    //写入分区的个数
     metadataOutputStream.writeInt(getPartitionStore().getNumPartitions());
-
+    //写入各分区 ID
     for (Integer partitionId : getPartitionStore().getPartitionIds()) {
       metadataOutputStream.writeInt(partitionId);
     }
     metadataOutputStream.close();
 
+    //压缩写入顶点信息
     storeCheckpointVertices();
 
     FSDataOutputStream checkpointOutputStream =
@@ -1287,6 +1333,7 @@ else[HADOOP_NON_SECURE]*/
     //       of a partition when out-of-core is enabled.
     for (Integer partitionId : getPartitionStore().getPartitionIds()) {
       // write messages
+      //写入每个分区对应的  messages
       checkpointOutputStream.writeInt(partitionId);
       getServerData().getCurrentMessageStore()
           .writePartition(checkpointOutputStream, partitionId);
@@ -1294,15 +1341,21 @@ else[HADOOP_NON_SECURE]*/
 
     }
 
+    /*写入 worker 接收到的 messages，与分区 messages 不同，分区 messages 有目的地 vertex ID
+    * 这里的 messages 是 worker 从其它 worker 接收到的全局 messages，默认情况不会使用，即
+    * w2wMessages.size() == 0
+     */
     List<Writable> w2wMessages =
         getServerData().getCurrentWorkerToWorkerMessages();
     WritableUtils.writeList(w2wMessages, checkpointOutputStream);
 
     checkpointOutputStream.close();
 
+    //checkpoint 成功之后创建文件标识 checkpoint 有效？
     getFs().createNewFile(validFilePath);
 
     // Notify master that checkpoint is stored
+    // Zookeeper 创建文件表明 checkpoint 结束
     String workerWroteCheckpoint =
         getWorkerWroteCheckpointPath(getApplicationAttempt(),
             getSuperstep()) + "/" + workerInfo.getHostnameId();
@@ -1416,6 +1469,7 @@ else[HADOOP_NON_SECURE]*/
       }
     };
 
+    //即便是在线程中进行写，但实际上整个过程依旧是阻塞的，对主线程而言。
     ProgressableUtils.getResultsWithNCallables(callableFactory, numThreads,
         "checkpoint-vertices-%d", getContext());
 
@@ -1452,6 +1506,7 @@ else[HADOOP_NON_SECURE]*/
 
           @Override
           public Void call() throws Exception {
+            //遍历处理 partition ID
             while (!partitionIdQueue.isEmpty()) {
               Integer partitionId = partitionIdQueue.poll();
               if (partitionId == null) {
@@ -1464,15 +1519,19 @@ else[HADOOP_NON_SECURE]*/
               FSDataInputStream compressedStream =
                   getFs().open(path);
 
+              //还原为正常流
               DataInputStream stream = codec == null ? compressedStream :
                   new DataInputStream(
                       codec.createInputStream(compressedStream));
 
+              //创建一个空的 partition
               Partition<I, V, E> partition =
                   getConfiguration().createPartition(partitionId, getContext());
 
+              //从流中读取字段
               partition.readFields(stream);
 
+              //将 partition 加入到 paritionStore 中
               getPartitionStore().addPartition(partition);
 
               stream.close();
@@ -1484,6 +1543,7 @@ else[HADOOP_NON_SECURE]*/
       }
     };
 
+    //执行 callableFactory#call 方法
     ProgressableUtils.getResultsWithNCallables(callableFactory, numThreads,
         "load-vertices-%d", getContext());
 
@@ -1503,47 +1563,62 @@ else[HADOOP_NON_SECURE]*/
     // that match my hostname and id from the master designated checkpoint
     // prefixes.
     try {
+      //创建文件流
       DataInputStream metadataStream =
           getFs().open(metadataFilePath);
 
+      //读取 partitions 数目
       int partitions = metadataStream.readInt();
       List<Integer> partitionIds = new ArrayList<>(partitions);
       for (int i = 0; i < partitions; i++) {
+        //读取 partition ID
         int partitionId = metadataStream.readInt();
         partitionIds.add(partitionId);
       }
 
+      //恢复顶点数据
       loadCheckpointVertices(superstep, partitionIds);
 
       getContext().progress();
 
       metadataStream.close();
 
+      //处理 checkpoint 文件
       DataInputStream checkpointStream =
           getFs().open(checkpointFilePath);
       workerContext.readFields(checkpointStream);
 
       // Load global stats and superstep classes
+      //恢复全局状态和 superstepClasses
       GlobalStats globalStats = new GlobalStats();
       SuperstepClasses superstepClasses = SuperstepClasses.createToRead(
           getConfiguration());
+      //获得最终的 checkpoint 路径
       String finalizedCheckpointPath = getSavedCheckpointBasePath(superstep) +
           CheckpointingUtils.CHECKPOINT_FINALIZED_POSTFIX;
       DataInputStream finalizedStream =
           getFs().open(new Path(finalizedCheckpointPath));
+      //从流中恢复全局状态
       globalStats.readFields(finalizedStream);
+      //恢复计算类和 combiner 类信息
       superstepClasses.readFields(finalizedStream);
       getConfiguration().updateSuperstepClasses(superstepClasses);
+      //重置 message
       getServerData().resetMessageStores();
 
       // TODO: checkpointing messages along with vertices to avoid multiple
       //       loads of a partition when out-of-core is enabled.
       for (int i = 0; i < partitions; i++) {
         int partitionId = checkpointStream.readInt();
+        /**
+         * {@link org.apache.giraph.comm.messages.primitives.IdByteArrayMessageStore}
+         * 从流中反序列化 message
+         */
         getServerData().getCurrentMessageStore()
             .readFieldsForPartition(checkpointStream, partitionId);
       }
 
+      //从流中读取 Writable 对象，之前超步接收的其它 worker 的信息
       List<Writable> w2wMessages = (List<Writable>) WritableUtils.readList(
           checkpointStream);
       getServerData().getCurrentWorkerToWorkerMessages().addAll(w2wMessages);
@@ -1561,6 +1636,7 @@ else[HADOOP_NON_SECURE]*/
 /*if[HADOOP_NON_SECURE]
       workerClient.setup();
 else[HADOOP_NON_SECURE]*/
+      //重新连接
       workerClient.setup(getConfiguration().authenticate());
 /*end[HADOOP_NON_SECURE]*/
       return new VertexEdgeCount(globalStats.getVertexCount(),
@@ -1591,6 +1667,7 @@ else[HADOOP_NON_SECURE]*/
     for (Entry<WorkerInfo, List<Integer>> workerPartitionList :
       randomEntryList) {
       for (Integer partitionId : workerPartitionList.getValue()) {
+        //移除需要发送的分区并返回分区信息
         Partition<I, V, E> partition =
             getPartitionStore().removePartition(partitionId);
         if (partition == null) {
@@ -1604,6 +1681,11 @@ else[HADOOP_NON_SECURE]*/
               workerPartitionList.getKey() + " partition " +
               partitionId);
         }
+        /**
+         * 发起发送请求，{@link NettyWorkerClientRequestProcessor#sendPartitionRequest}
+         * 将 partition 信息发给目标 worker，目标 worker 将会调用 {@link org.apache.giraph.comm.requests.SendVertexRequest#doRequest}
+         * 将 partition 加入 partitionStore
+         */
         workerClientRequestProcessor.sendPartitionRequest(
             workerPartitionList.getKey(),
             partition);
@@ -1648,17 +1730,22 @@ else[HADOOP_NON_SECURE]*/
     // 3. Notify completion with a ZooKeeper stamp
     // 4. Wait for all my dependencies to be done (if any)
     // 5. Add the partitions to myself.
+    //通过 PartitionOwner 生成对应的分区交换信息
     PartitionExchange partitionExchange =
         workerGraphPartitioner.updatePartitionOwners(
             getWorkerInfo(), masterSetPartitionOwners);
+    //连接 worker 和 master
     workerClient.openConnections();
 
+    //获得需要发送给其它 worker 的分区信息
     Map<WorkerInfo, List<Integer>> sendWorkerPartitionMap =
         partitionExchange.getSendWorkerPartitionMap();
+    //如果当前 worker 负责的分区不为空
     if (!getPartitionStore().isEmpty()) {
       sendWorkerPartitions(sendWorkerPartitionMap);
     }
 
+    //获取当前 worker 需要从哪些 worker 接收分区信息
     Set<WorkerInfo> myDependencyWorkerSet =
         partitionExchange.getMyDependencyWorkerSet();
     Set<String> workerIdSet = new HashSet<String>();
@@ -1681,9 +1768,12 @@ else[HADOOP_NON_SECURE]*/
     List<String> workerDoneList;
     try {
       while (true) {
+        //根据路径获得已经完成交换的 worker
         workerDoneList = getZkExt().getChildrenExt(
             vertexExchangePath, true, false, false);
+        //移除已经完成交换的 worker
         workerIdSet.removeAll(workerDoneList);
+        //为空则证明当前 worker 所需分区信息已经发送过来
         if (workerIdSet.isEmpty()) {
           break;
         }
@@ -1691,6 +1781,7 @@ else[HADOOP_NON_SECURE]*/
           LOG.info("exchangeVertexPartitions: Waiting for workers " +
               workerIdSet);
         }
+        //等待分区交换结束
         getPartitionExchangeChildrenChangedEvent().waitForTimeoutOrFail(
             GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
                 getConfiguration()));
@@ -1718,6 +1809,8 @@ else[HADOOP_NON_SECURE]*/
   @Override
   protected boolean processEvent(WatchedEvent event) {
     boolean foundEvent = false;
+    //一个 Worker Task 被杀死之后，Hadoop 会再启动一个 Task，
+    // 然后 worker 会创建一个 znode 从而触发该事件
     if (event.getPath().startsWith(masterJobStatePath) &&
         (event.getType() == EventType.NodeChildrenChanged)) {
       if (LOG.isInfoEnabled()) {

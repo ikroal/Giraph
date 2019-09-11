@@ -18,19 +18,19 @@
 
 package org.apache.giraph.worker;
 
-import java.io.IOException;
-
+import com.yammer.metrics.core.Counter;
+import com.yammer.metrics.core.Meter;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.GiraphInputFormat;
+import org.apache.giraph.io.InputType;
 import org.apache.giraph.io.VertexInputFormat;
 import org.apache.giraph.io.VertexReader;
 import org.apache.giraph.io.filters.VertexInputFilter;
 import org.apache.giraph.mapping.translate.TranslateEdge;
-import org.apache.giraph.io.InputType;
 import org.apache.giraph.ooc.OutOfCoreEngine;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.utils.LoggerUtils;
@@ -42,8 +42,7 @@ import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.Meter;
+import java.io.IOException;
 
 /**
  * Load as many vertex input splits as possible.
@@ -151,6 +150,9 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
   @Override
   protected VertexEdgeCount readInputSplit(
       InputSplit inputSplit) throws IOException, InterruptedException {
+    /**
+     * 创建读者，例如：{@link org.apache.giraph.io.internal.WrappedVertexInputFormat#createVertexReader}
+     */
     VertexReader<I, V, E> vertexReader =
         vertexInputFormat.createVertexReader(inputSplit, context);
     vertexReader.setConf(configuration);
@@ -171,10 +173,12 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
 
     int count = 0;
     OutOfCoreEngine oocEngine = bspServiceWorker.getServerData().getOocEngine();
+    //循环处理每个顶点
     while (vertexReader.nextVertex()) {
       // If out-of-core mechanism is used, check whether this thread
       // can stay active or it should temporarily suspend and stop
       // processing and generating more data for the moment.
+      //默认情况为 null
       if (oocEngine != null &&
           (++count & OutOfCoreEngine.CHECK_IN_INTERVAL) == 0) {
         oocEngine.activeThreadCheckIn();
@@ -208,6 +212,7 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
       }
 
       // Before saving to partition-store translate all edges (if present)
+      //默认情况为 null
       if (translateEdge != null) {
         // only iff vertexInput reads edges also
         if (readerVertex.getEdges() != null && readerVertex.getNumEdges() > 0) {
@@ -240,6 +245,8 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
 
       PartitionOwner partitionOwner =
           bspServiceWorker.getVertexPartitionOwner(readerVertex.getId());
+      /**Sends a vertex to the appropriate partition owner
+       */
       workerClientRequestProcessor.sendVertexRequest(
           partitionOwner, readerVertex);
       edgesSinceLastUpdate += readerVertex.getNumEdges();

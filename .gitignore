@@ -34,3 +34,7 @@ failed-profile.txt
 
 # File with all giraph conf options
 /src/site/xdoc/options.xml
+
+# Running dir
+**/_bsp/
+**/output/

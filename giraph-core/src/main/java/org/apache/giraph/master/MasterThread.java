@@ -79,8 +79,11 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
     super(MasterThread.class.getName());
     this.bspServiceMaster = bspServiceMaster;
     this.context = context;
+    //计数统计信息相关
     GiraphTimers.init(context);
+    //是否使用超步计数
     superstepCounterOn = USE_SUPERSTEP_COUNTERS.get(context.getConfiguration());
+    //是否区分 master 和 worker
     splitMasterWorker = SPLIT_MASTER_WORKER.get(context.getConfiguration());
   }
 
@@ -99,7 +102,9 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
       long startMillis = System.currentTimeMillis();
       long initializeMillis = 0;
       long endMillis = 0;
+      //设置，根据 restartSuperstep 配置决定是否需要修改 Superstep
       bspServiceMaster.setup();
+      //初始化 Superstep 状态
       SuperstepState superstepState = SuperstepState.INITIAL;
 
       if (bspServiceMaster.becomeMaster()) {
@@ -111,6 +116,7 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
         GiraphTimers.getInstance().getInitializeMs().increment(
             initializeMillis - startMillis);
         // Attempt to create InputSplits if necessary. Bail out if that fails.
+        //创建数据分片，在 worker 进行请求时发送给 worker
         if (bspServiceMaster.getRestartedSuperstep() !=
             BspService.UNSET_SUPERSTEP ||
             (bspServiceMaster.createMappingInputSplits() != -1 &&
@@ -119,6 +125,7 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
           long setupMillis = System.currentTimeMillis() - initializeMillis;
           GiraphTimers.getInstance().getSetupMs().increment(setupMillis);
           setupSecs = setupMillis / 1000.0d;
+          //当前超步的状态，初始为 false
           while (!superstepState.isExecutionComplete()) {
             long startSuperstepMillis = System.currentTimeMillis();
             long cachedSuperstep = bspServiceMaster.getSuperstep();
@@ -126,8 +133,14 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
             if (splitMasterWorker) {
               GiraphMetrics.get().resetSuperstepMetrics(cachedSuperstep);
             }
+            /**
+             * 从 {@link org.apache.giraph.conf.GiraphClasses} 中获取到用户设置的
+             * computationClass
+             */
             Class<? extends Computation> computationClass =
                 bspServiceMaster.getMasterCompute().getComputation();
+            //重要的调用，分配分区，建立 master 与 worker 的连接，部分 aggregator 操作
+            // 返回超步状态，写检查点
             superstepState = bspServiceMaster.coordinateSuperstep();
             long superstepMillis = System.currentTimeMillis() -
                 startSuperstepMillis;
@@ -141,6 +154,7 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
                   " and is now on superstep " +
                   bspServiceMaster.getSuperstep());
             }
+            //是否使用超步计数器
             if (superstepCounterOn) {
               String computationName = (computationClass == null) ?
                   null : computationClass.getSimpleName();
@@ -148,10 +162,13 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
                   computationName).increment(superstepMillis);
             }
 
+            //超步结束之后调用
             bspServiceMaster.postSuperstep();
 
             // If a worker failed, restart from a known good superstep
+            //需要重启
             if (superstepState == SuperstepState.WORKER_FAILURE) {
+              //从上次 checkpoint 设置部分参数
               bspServiceMaster.restartFromCheckpoint(
                   bspServiceMaster.getLastGoodCheckpoint());
             }
@@ -160,6 +177,7 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
           bspServiceMaster.setJobState(ApplicationState.FINISHED, -1, -1);
         }
       }
+      //等待 Job 完成之后删除文件、关闭连接
       bspServiceMaster.cleanup(superstepState);
       if (!superstepSecsMap.isEmpty()) {
         GiraphTimers.getInstance().getShutdownMs().
@@ -191,12 +209,14 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
         GiraphTimers.getInstance().getTotalMs().
           increment(System.currentTimeMillis() - initializeMillis);
       }
+      //Job 完成之后回调
       bspServiceMaster.postApplication();
       // CHECKSTYLE: stop IllegalCatchCheck
     } catch (Exception e) {
       // CHECKSTYLE: resume IllegalCatchCheck
       LOG.error("masterThread: Master algorithm failed with " +
           e.getClass().getSimpleName(), e);
+      //Job 失败的时候回调
       bspServiceMaster.failureCleanup(e);
       throw new IllegalStateException(e);
     }

@@ -172,11 +172,14 @@ public class PartitionBalancer {
         PartitionOwner partitionOwner) {
       value += getBalanceValue(ownerStatsMap.get(partitionOwner),
           balanceValue);
+      //平衡规则的 workerInfo 与之前给定的 workerInfo 不一致，则需要 setPreviousWorkerInfo
+      //表明之前的 partition 由 previousWorkerInfo 负责
       if (!partitionOwner.getWorkerInfo().equals(workerInfo)) {
         partitionOwner.setPreviousWorkerInfo(
             partitionOwner.getWorkerInfo());
         partitionOwner.setWorkerInfo(workerInfo);
       } else {
+        //没有变化无需 setWorkerInfo
         partitionOwner.setPreviousWorkerInfo(null);
       }
     }
@@ -220,6 +223,7 @@ public class PartitionBalancer {
       LOG.info("balancePartitionsAcrossWorkers: Using algorithm " +
           balanceAlgorithm);
     }
+    //平衡策略的指定
     BalanceValue balanceValue = BalanceValue.UNSET;
     if (balanceAlgorithm.equals(STATIC_BALANCE_ALGORITHM)) {
       return partitionOwners;
@@ -284,13 +288,18 @@ public class PartitionBalancer {
     // 3.  From largest partition to the smallest, take the partition
     //     worker at the top of the heap, add the partition to it, and
     //     then put it back in the heap
+    //会对 PartitionOwner 和 WorkerInfoAssignments 进行排序，
+    // 然后依次取出对应的值对 PartitionOwner 进行修改
     List<PartitionOwner> partitionOwnerList =
         new ArrayList<PartitionOwner>(partitionOwners);
+    //PartitionOwner 排序
     Collections.sort(partitionOwnerList,
         Collections.reverseOrder(
             new PartitionOwnerComparator(ownerStatsMap, balanceValue)));
+    //WorkerInfoAssignments 创建优先队列，排序
     PriorityQueue<WorkerInfoAssignments> minQueue =
         new PriorityQueue<WorkerInfoAssignments>(workerInfoAssignmentsList);
+    //修改对应的 PartitionOwner 信息
     for (PartitionOwner partitionOwner : partitionOwnerList) {
       WorkerInfoAssignments chosenWorker = minQueue.remove();
       chosenWorker.assignPartitionOwner(partitionOwner);
@@ -318,10 +327,14 @@ public class PartitionBalancer {
     partitionOwnerList.clear();
     partitionOwnerList.addAll(masterSetPartitionOwners);
 
+    /**
+     * {@link #balancePartitionsAcrossWorkers} 有关
+     */
     Set<WorkerInfo> dependentWorkerSet = new HashSet<WorkerInfo>();
     Map<WorkerInfo, List<Integer>> workerPartitionOwnerMap =
         new HashMap<WorkerInfo, List<Integer>>();
     for (PartitionOwner partitionOwner : masterSetPartitionOwners) {
+      //没有 previousWorker 证明无需加入 dependentWorkerSet
       if (partitionOwner.getPreviousWorkerInfo() == null) {
         continue;
       } else if (partitionOwner.getWorkerInfo().equals(
@@ -333,9 +346,12 @@ public class PartitionBalancer {
                 "previous and current worker info " + partitionOwner +
                 " as me " + myWorkerInfo);
       } else if (partitionOwner.getWorkerInfo().equals(myWorkerInfo)) {
+        //生成依赖集，证明需要从依赖集中的 worker 获得 partition
         dependentWorkerSet.add(partitionOwner.getPreviousWorkerInfo());
       } else if (partitionOwner.getPreviousWorkerInfo().equals(
           myWorkerInfo)) {
+        //如果当前 worker 与 partitionOwner 中的 previousWorkerInfo 相同，
+        // 证明需要向 partitionOwner 的 workerInfo 发送 partition
         if (workerPartitionOwnerMap.containsKey(
             partitionOwner.getWorkerInfo())) {
           workerPartitionOwnerMap.get(

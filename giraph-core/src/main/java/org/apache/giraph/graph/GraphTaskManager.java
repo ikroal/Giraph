@@ -18,22 +18,8 @@
 
 package org.apache.giraph.graph;
 
-import java.io.IOException;
-import java.lang.management.GarbageCollectorMXBean;
-import java.lang.management.ManagementFactory;
-import java.net.URL;
-import java.net.URLDecoder;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Enumeration;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-
 import com.sun.management.GarbageCollectionNotificationInfo;
 import com.yammer.metrics.core.Counter;
-
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.giraph.bsp.BspService;
 import org.apache.giraph.bsp.CentralizedServiceMaster;
@@ -46,12 +32,7 @@ import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.job.JobProgressTracker;
 import org.apache.giraph.master.BspServiceMaster;
 import org.apache.giraph.master.MasterThread;
-import org.apache.giraph.metrics.GiraphMetrics;
-import org.apache.giraph.metrics.GiraphMetricsRegistry;
-import org.apache.giraph.metrics.GiraphTimer;
-import org.apache.giraph.metrics.GiraphTimerContext;
-import org.apache.giraph.metrics.ResetSuperstepMetricsObserver;
-import org.apache.giraph.metrics.SuperstepMetricsRegistry;
+import org.apache.giraph.metrics.*;
 import org.apache.giraph.ooc.OutOfCoreEngine;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.partition.PartitionStats;
@@ -61,11 +42,7 @@ import org.apache.giraph.utils.CallableFactory;
 import org.apache.giraph.utils.GcObserver;
 import org.apache.giraph.utils.MemoryUtils;
 import org.apache.giraph.utils.ProgressableUtils;
-import org.apache.giraph.worker.BspServiceWorker;
-import org.apache.giraph.worker.InputSplitsCallable;
-import org.apache.giraph.worker.WorkerContext;
-import org.apache.giraph.worker.WorkerObserver;
-import org.apache.giraph.worker.WorkerProgress;
+import org.apache.giraph.worker.*;
 import org.apache.giraph.writable.kryo.KryoWritableWrapper;
 import org.apache.giraph.zk.ZooKeeperManager;
 import org.apache.hadoop.conf.Configuration;
@@ -73,16 +50,24 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
-import org.apache.log4j.Appender;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-import org.apache.log4j.PatternLayout;
+import org.apache.log4j.*;
 
 import javax.management.Notification;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 import javax.management.openmbean.CompositeData;
+import java.io.IOException;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The Giraph-specific business logic for a single BSP
@@ -225,6 +210,7 @@ end[PURE_YARN]*/
     throws IOException, InterruptedException {
     context.setStatus("setup: Beginning worker setup.");
     Configuration hadoopConf = context.getConfiguration();
+    //初始化一些配置
     conf = new ImmutableClassesGiraphConfiguration<I, V, E>(hadoopConf);
     initializeJobProgressTracker();
     // Setting the default handler for uncaught exceptions.
@@ -246,7 +232,9 @@ end[PURE_YARN]*/
     conf.createComputationFactory().initialize(conf);
     // Do some task setup (possibly starting up a Zookeeper service)
     context.setStatus("setup: Initializing Zookeeper services.");
+    //从配置中读取全局的信息，初始情况下为 ""
     String serverPortList = conf.getZookeeperList();
+    //进行连接，Zookeeper 作用需要了解
     if (serverPortList.isEmpty()) {
       if (startZooKeeperManager()) {
         return; // ZK connect/startup failed
@@ -263,6 +251,7 @@ end[PURE_YARN]*/
         .setStatus("setup: Connected to Zookeeper service " + serverPortList);
     this.graphFunctions = determineGraphFunctions(conf, zkManager);
     if (zkManager != null && this.graphFunctions.isMaster()) {
+      //将由 master 创建的文件夹标记为删除，文件系统关闭时将会删除文件
       zkManager.cleanupOnExit();
     }
     try {
@@ -307,21 +296,32 @@ end[PURE_YARN]*/
   * 5) Dump output.
   */
   public void execute() throws IOException, InterruptedException {
+    //已经完成的情况下或者不是 worker 时将停止执行，这意味着 master 不会执行这一块的代码
     if (checkTaskState()) {
       return;
     }
     preLoadOnWorkerObservers();
     GiraphTimerContext superstepTimerContext = superstepTimer.time();
+    /*
+     * 如果需要重启，则从 checkpoint 中进行恢复，与 master 和 worker 建立网络连接
+     * 处理 aggregator 值，获取输入分片，从分片中读取 partition 数据，从 Zookeeper 获取全局状态，
+     * 返回超步结束状态
+     */
     finishedSuperstepStats = serviceWorker.setup();
     superstepTimerContext.stop();
     if (collectInputSuperstepStats(finishedSuperstepStats)) {
       return;
     }
+    //设置图的状态和 WorkerContext，WorkerContext 暂时不知道什么用？
     prepareGraphStateAndWorkerContext();
     List<PartitionStats> partitionStatsList = new ArrayList<PartitionStats>();
     int numComputeThreads = conf.getNumComputeThreads();
 
     // main superstep processing loop
+    /**
+     * {@link GlobalStats#getHaltComputation} 相关
+     * Master 会对该值进行设置
+     */
     while (!finishedSuperstepStats.allVerticesHalted()) {
       final long superstep = serviceWorker.getSuperstep();
       superstepTimerContext = getTimerForThisSuperstep(superstep);
@@ -329,30 +329,39 @@ end[PURE_YARN]*/
           finishedSuperstepStats.getVertexCount(),
           finishedSuperstepStats.getEdgeCount(),
           context);
+      //从 master 获取 PartitionOwner
       Collection<? extends PartitionOwner> masterAssignedPartitionOwners =
         serviceWorker.startSuperstep();
       if (LOG.isDebugEnabled()) {
         LOG.debug("execute: " + MemoryUtils.getRuntimeMemoryStats());
       }
       context.progress();
+      //worker 交换分区
       serviceWorker.exchangeVertexPartitions(masterAssignedPartitionOwners);
       context.progress();
+      //检查是否是重启的超步，是否需要从 checkpoint 进行恢复
       boolean hasBeenRestarted = checkSuperstepRestarted(superstep);
 
+      //获取全局状态
       GlobalStats globalStats = serviceWorker.getGlobalStats();
 
       if (hasBeenRestarted) {
+        //如果是重启超步，这需要重新初始化图的状态
         graphState = new GraphState(superstep,
             finishedSuperstepStats.getVertexCount(),
             finishedSuperstepStats.getEdgeCount(),
             context);
       } else if (storeCheckpoint(globalStats.getCheckpointStatus())) {
+        //检查 worker 是否需要进行 checkpoint
         break;
       }
+      //突变不懂？后续再看
       serviceWorker.getServerData().prepareResolveMutations();
       context.progress();
+      //进行一些准备工作
       prepareForSuperstep(graphState);
       context.progress();
+      //获取 messages
       MessageStore<I, Writable> messageStore =
           serviceWorker.getServerData().getCurrentMessageStore();
       int numPartitions = serviceWorker.getPartitionStore().getNumPartitions();
@@ -365,9 +374,11 @@ end[PURE_YARN]*/
       partitionStatsList.clear();
       // execute the current superstep
       if (numPartitions > 0) {
+        //核心方法，处理 partition 进行计算
         processGraphPartitions(context, partitionStatsList, graphState,
           messageStore, numThreads);
       }
+      //结束超步
       finishedSuperstepStats = completeSuperstepAndCollectStats(
         partitionStatsList, superstepTimerContext);
 
@@ -493,11 +504,16 @@ end[PURE_YARN]*/
   /**
    * Utility function to prepare various objects managing BSP superstep
    * operations for the next superstep.
+   *
    * @param graphState graph state metadata object
    */
   private void prepareForSuperstep(GraphState graphState) {
+    //处理 aggrator 值
     serviceWorker.prepareSuperstep();
 
+    /**配置 WorkerContext
+     * {@link DefaultWorkerContext}
+     */
     serviceWorker.getWorkerContext().setGraphState(graphState);
     serviceWorker.getWorkerContext().setupSuperstep(serviceWorker);
     GiraphTimerContext preSuperstepTimer = wcPreSuperstepTimer.time();
@@ -628,10 +644,15 @@ end[PURE_YARN]*/
         LOG.info("setup: Starting up BspServiceMaster " +
           "(master thread)...");
       }
+      //创建 master 对象
       serviceMaster = new BspServiceMaster<I, V, E>(context, this);
+      //master 运行在线程里面
       masterThread = new MasterThread<I, V, E>(serviceMaster, context);
       masterThread.setUncaughtExceptionHandler(
           createUncaughtExceptionHandler());
+        /**
+         * {@link MasterThread#run()}
+         */
       masterThread.start();
     }
     if (graphFunctions.isWorker()) {
@@ -797,19 +818,23 @@ end[PURE_YARN]*/
       final GraphState graphState,
       final MessageStore<I, Writable> messageStore,
       int numThreads) {
+    //获取 partition 信息
     PartitionStore<I, V, E> partitionStore = serviceWorker.getPartitionStore();
     long verticesToCompute = 0;
     for (Integer partitionId : partitionStore.getPartitionIds()) {
+      //进行计算的顶点数目
       verticesToCompute += partitionStore.getPartitionVertexCount(partitionId);
     }
     WorkerProgress.get().startSuperstep(
         serviceWorker.getSuperstep(), verticesToCompute,
         serviceWorker.getPartitionStore().getNumPartitions());
+    //生成 Partition 队列，方便多个线程处理？
     partitionStore.startIteration();
 
     GiraphTimerContext computeAllTimerContext = computeAll.time();
     timeToFirstMessageTimerContext = timeToFirstMessage.time();
 
+    //创建工厂类
     CallableFactory<Collection<PartitionStats>> callableFactory =
       new CallableFactory<Collection<PartitionStats>>() {
         @Override
@@ -823,10 +848,14 @@ end[PURE_YARN]*/
               serviceWorker);
         }
       };
+    /**
+     * {@link ComputeCallable#call}
+     */
     List<Collection<PartitionStats>> results =
         ProgressableUtils.getResultsWithNCallables(callableFactory, numThreads,
             "compute-%d", context);
 
+    //保存处理之后的分区状态
     for (Collection<PartitionStats> result : results) {
       partitionStatsList.addAll(result);
     }
@@ -846,8 +875,10 @@ end[PURE_YARN]*/
       if (LOG.isInfoEnabled()) {
         LOG.info("execute: Loading from checkpoint " + superstep);
       }
+      //从 checkpoint 进行恢复
       VertexEdgeCount vertexEdgeCount = serviceWorker.loadCheckpoint(
         serviceWorker.getRestartedSuperstep());
+      //重新创建超步状态
       finishedSuperstepStats = new FinishedSuperstepStats(0, false,
           vertexEdgeCount.getVertexCount(), vertexEdgeCount.getEdgeCount(),
           false, CheckpointStatus.NONE);

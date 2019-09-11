@@ -17,11 +17,11 @@
  */
 package org.apache.giraph.graph;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.Callable;
-
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.yammer.metrics.core.Counter;
+import com.yammer.metrics.core.Histogram;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
 import org.apache.giraph.comm.messages.MessageStore;
@@ -51,11 +51,10 @@ import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.Histogram;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.Callable;
 
 /**
  * Compute as many vertex partitions as possible.  Every thread will has its
@@ -158,8 +157,12 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
 
     vertexWriter = serviceWorker.getSuperstepOutput().getVertexWriter();
 
+    //根据用户设定的 Computation 类创建其对象
     Computation<I, V, E, M1, M2> computation =
         (Computation<I, V, E, M1, M2>) configuration.createComputation();
+    /**
+     * {@link AbstractComputation#initialize}
+     */
     computation.initialize(graphState, workerClientRequestProcessor,
         serviceWorker, aggregatorUsage);
     computation.preSuperstep();
@@ -177,24 +180,29 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
     while (true) {
       long startTime = System.currentTimeMillis();
       long startGCTime = taskManager.getSuperstepGCTime();
+      //依次处理每个 partition
       Partition<I, V, E> partition = partitionStore.getNextPartition();
       long timeDoingGCWhileWaiting =
           taskManager.getSuperstepGCTime() - startGCTime;
       timeDoingGC += timeDoingGCWhileWaiting;
       timeWaiting += System.currentTimeMillis() - startTime -
           timeDoingGCWhileWaiting;
+      //partition 处理完成
       if (partition == null) {
         break;
       }
       long startProcessingTime = System.currentTimeMillis();
       startGCTime = taskManager.getSuperstepGCTime();
       try {
+        //？？解决冲突
         serviceWorker.getServerData().resolvePartitionMutation(partition);
+        //进行计算并获得分区计算之后的状态
         PartitionStats partitionStats = computePartition(
             computation, partition, oocEngine,
             serviceWorker.getConfiguration().getIncomingMessageClasses()
               .ignoreExistingVertices());
         partitionStatsList.add(partitionStats);
+        //重置计数并返回 message 数量，以下很多都是统计信息
         long partitionMsgs = workerClientRequestProcessor.resetMessageCount();
         partitionStats.addMessagesSentCount(partitionMsgs);
         messagesSentCounter.inc(partitionMsgs);
@@ -257,6 +265,7 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
           addMessageBytesSentCount(partitionMsgBytes);
         messageBytesSentCounter.inc(partitionMsgBytes);
       }
+      //暂时不管。。
       aggregatorUsage.finishThreadComputation();
     } catch (IOException e) {
       throw new IllegalStateException("call: Flushing failed.", e);
@@ -281,11 +290,13 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
       Partition<I, V, E> partition, OutOfCoreEngine oocEngine,
       boolean ignoreExistingVertices)
       throws IOException, InterruptedException {
+    //初始化一个状态
     PartitionStats partitionStats =
         new PartitionStats(partition.getId(), 0, 0, 0, 0, 0,
             serviceWorker.getWorkerInfo().getHostnameId());
     final LongRef verticesComputedProgress = new LongRef(0);
 
+    //用于报告进度
     Progressable verticesProgressable = new Progressable() {
       @Override
       public void progress() {
@@ -299,16 +310,21 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
     };
     // Make sure this is thread-safe across runs
     synchronized (partition) {
+      //如果只需要处理 message
       if (ignoreExistingVertices) {
+        //取出有 messages 需要处理的顶点
         Iterable<I> destinations =
             messageStore.getPartitionDestinationVertices(partition.getId());
         if (!Iterables.isEmpty(destinations)) {
           OnlyIdVertex<I> vertex = new OnlyIdVertex<>();
 
+          //迭代进行顶点计算
           for (I vertexId : destinations) {
+            //取出顶点需要处理的 messages
             Iterable<M1> messages = messageStore.getVertexMessages(vertexId);
             Preconditions.checkState(!Iterables.isEmpty(messages));
             vertex.setId(vertexId);
+            //顶点进行计算
             computation.compute((Vertex) vertex, messages);
 
             // Remove the messages now that the vertex has finished computation
@@ -322,6 +338,7 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
         }
       } else {
         int count = 0;
+        //遍历处理分区的顶点
         for (Vertex<I, V, E> vertex : partition) {
           // If out-of-core mechanism is used, check whether this thread
           // can stay active or it should temporarily suspend and stop
@@ -330,17 +347,24 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
               (++count & OutOfCoreEngine.CHECK_IN_INTERVAL) == 0) {
             oocEngine.activeThreadCheckIn();
           }
+          /**
+           * {@link org.apache.giraph.comm.messages.primitives.IdByteArrayMessageStore}
+           */
           Iterable<M1> messages =
               messageStore.getVertexMessages(vertex.getId());
+          //如果 vertex 被终止了，但是仍有消息时将其唤醒
           if (vertex.isHalted() && !Iterables.isEmpty(messages)) {
             vertex.wakeUp();
           }
           if (!vertex.isHalted()) {
             context.progress();
+            //调用 compute 方法进行计算
             computation.compute(vertex, messages);
+            //不明白作用。。性能优化？
             // Need to unwrap the mutated edges (possibly)
             vertex.unwrapMutableEdges();
             //Compact edges representation if possible
+            //根据 edge 实际大小进行压缩
             if (vertex instanceof Trimmable) {
               ((Trimmable) vertex).trim();
             }
@@ -350,6 +374,7 @@ public class ComputeCallable<I extends WritableComparable, V extends Writable,
             partition.saveVertex(vertex);
           }
           if (vertex.isHalted()) {
+            //统计结束计算的顶点数目
             partitionStats.incrFinishedVertexCount();
           }
           // Remove the messages now that the vertex has finished computation

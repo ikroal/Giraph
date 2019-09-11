@@ -21,10 +21,6 @@ package org.apache.giraph.conf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.UnpooledByteBufAllocator;
-
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-
 import org.apache.giraph.aggregators.AggregatorWriter;
 import org.apache.giraph.bsp.checkpoints.CheckpointSupportedChecker;
 import org.apache.giraph.combiner.MessageCombiner;
@@ -32,16 +28,8 @@ import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.edge.ReuseObjectsOutEdges;
 import org.apache.giraph.factories.ComputationFactory;
 import org.apache.giraph.factories.VertexValueFactory;
-import org.apache.giraph.graph.Computation;
-import org.apache.giraph.graph.MapperObserver;
-import org.apache.giraph.graph.Vertex;
-import org.apache.giraph.graph.VertexResolver;
-import org.apache.giraph.graph.VertexValueCombiner;
-import org.apache.giraph.io.EdgeInputFormat;
-import org.apache.giraph.io.EdgeOutputFormat;
-import org.apache.giraph.io.MappingInputFormat;
-import org.apache.giraph.io.VertexInputFormat;
-import org.apache.giraph.io.VertexOutputFormat;
+import org.apache.giraph.graph.*;
+import org.apache.giraph.io.*;
 import org.apache.giraph.io.filters.EdgeInputFilter;
 import org.apache.giraph.io.filters.VertexInputFilter;
 import org.apache.giraph.job.GiraphJobObserver;
@@ -58,6 +46,9 @@ import org.apache.giraph.worker.WorkerObserver;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.net.DNS;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 
 /**
  * Adds user methods specific to Giraph.  This will be put into an
@@ -1002,6 +993,7 @@ public class GiraphConfiguration extends Configuration
   /**
    * Set the checkpoint frequeuncy of how many supersteps to wait before
    * checkpointing
+   * 设置 checkpoint 频率
    *
    * @param checkpointFrequency How often to checkpoint (0 means never)
    */

@@ -103,6 +103,9 @@ public class SendWorkerVerticesRequest<I extends WritableComparable,
         iterator = workerPartitions.getIterator();
     while (iterator.hasNext()) {
       iterator.next();
+      /**添加 PartitionStore
+       * {@link org.apache.giraph.partition.SimplePartitionStore#addPartitionVertices}
+       */
       serverData.getPartitionStore()
           .addPartitionVertices(iterator.getCurrentFirst(),
               iterator.getCurrentSecond());

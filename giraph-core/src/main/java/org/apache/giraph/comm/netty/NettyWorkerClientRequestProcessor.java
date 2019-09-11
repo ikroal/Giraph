@@ -17,29 +17,14 @@
  */
 package org.apache.giraph.comm.netty;
 
-import java.io.IOException;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ConcurrentMap;
-
+import com.yammer.metrics.core.Counter;
+import com.yammer.metrics.core.Gauge;
+import com.yammer.metrics.util.PercentGauge;
 import org.apache.giraph.bsp.BspService;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.comm.SendEdgeCache;
-import org.apache.giraph.comm.SendMessageCache;
-import org.apache.giraph.comm.SendMutationsCache;
-import org.apache.giraph.comm.SendOneMessageToManyCache;
-import org.apache.giraph.comm.SendPartitionCache;
-import org.apache.giraph.comm.ServerData;
-import org.apache.giraph.comm.WorkerClient;
-import org.apache.giraph.comm.WorkerClientRequestProcessor;
+import org.apache.giraph.comm.*;
 import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.comm.requests.SendPartitionCurrentMessagesRequest;
-import org.apache.giraph.comm.requests.SendPartitionMutationsRequest;
-import org.apache.giraph.comm.requests.SendVertexRequest;
-import org.apache.giraph.comm.requests.SendWorkerEdgesRequest;
-import org.apache.giraph.comm.requests.SendWorkerVerticesRequest;
-import org.apache.giraph.comm.requests.WorkerRequest;
-import org.apache.giraph.comm.requests.WritableRequest;
+import org.apache.giraph.comm.requests.*;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
@@ -61,9 +46,10 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.log4j.Logger;
 
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.Gauge;
-import com.yammer.metrics.util.PercentGauge;
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Aggregate requests and sends them to the thread-safe NettyClient.  This
@@ -404,6 +390,7 @@ public class NettyWorkerClientRequestProcessor<I extends WritableComparable,
   public void flush() throws IOException {
     // Execute the remaining sends messages (if any)
     // including individual and compact messages.
+    //向其余 worker 发送 message
     sendMessageCache.flush();
 
     // Execute the remaining sends vertices (if any)
@@ -417,6 +404,7 @@ public class NettyWorkerClientRequestProcessor<I extends WritableComparable,
       WritableRequest writableRequest =
           new SendWorkerVerticesRequest(
               configuration, vertexIterator.getCurrentSecond());
+      //处理请求
       doRequest(vertexIterator.getCurrentFirst(), writableRequest);
     }
 
@@ -471,6 +459,9 @@ public class NettyWorkerClientRequestProcessor<I extends WritableComparable,
     // If this is local, execute locally
     if (serviceWorker.getWorkerInfo().getTaskId() ==
         workerInfo.getTaskId()) {
+      /**本地请求，本地处理
+       * {@link SendWorkerVerticesRequest#doRequest}
+       */
       ((WorkerRequest) writableRequest).doRequest(serverData);
       localRequests.inc();
     } else {

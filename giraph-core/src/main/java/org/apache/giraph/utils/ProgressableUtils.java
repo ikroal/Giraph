@@ -18,6 +18,7 @@
 
 package org.apache.giraph.utils;
 
+import org.apache.giraph.worker.InputSplitsCallable;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 
@@ -246,11 +247,16 @@ public class ProgressableUtils {
   public static <R> List<R> getResultsWithNCallables(
       CallableFactory<R> callableFactory, int numThreads,
       String threadNameFormat, Progressable progressable) {
+    //创建固定数量线程池
     ExecutorService executorService = Executors.newFixedThreadPool(numThreads,
         ThreadUtils.createThreadFactory(threadNameFormat));
     HashMap<Integer, Future<R>> futures = new HashMap<>(numThreads);
     for (int i = 0; i < numThreads; i++) {
+      /**
+       * {@link InputSplitsCallable#call()}
+       */
       Callable<R> callable = callableFactory.newCallable(i);
+      //执行 callable
       Future<R> future = executorService.submit(
           new LogStacktraceCallable<R>(callable));
       futures.put(i, future);
@@ -268,6 +274,7 @@ public class ProgressableUtils {
         R result;
         try {
           // Try to get result from the future
+          //获取结果，会进行阻塞
           result = entry.getValue().get(
               MSEC_TO_WAIT_ON_EACH_FUTURE, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {

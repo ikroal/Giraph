@@ -50,6 +50,8 @@ public abstract class GraphPartitionerFactory<I extends WritableComparable,
       @Override
       protected int getWorkerIndex(int partition, int partitionCount,
           int workerCount) {
+        //GraphPartitionerFactory----->HashPartitionerFactory
+        //确定 partition 所属的 worker 编号
         return GraphPartitionerFactory.this.getWorker(
             partition, partitionCount, workerCount);
       }

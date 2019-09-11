@@ -18,11 +18,9 @@
 
 package org.apache.giraph.worker;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.util.concurrent.Callable;
-
+import com.yammer.metrics.core.Counter;
+import com.yammer.metrics.core.Meter;
+import com.yammer.metrics.util.PercentGauge;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
 import org.apache.giraph.comm.netty.NettyWorkerClientRequestProcessor;
@@ -44,9 +42,10 @@ import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.log4j.Logger;
 
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.Meter;
-import com.yammer.metrics.util.PercentGauge;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.util.concurrent.Callable;
 
 /**
  * Abstract base class for loading vertex/edge input splits.
@@ -215,6 +214,7 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
         oocEngine.processingThreadStart();
       }
       while (true) {
+        //从 master 获取需要处理的输入分片 FileSplit，然后再去读取分片
         byte[] serializedInputSplit = splitsHandler.reserveInputSplit(
             getInputType(), inputSplitsProcessed == 0);
         if (serializedInputSplit == null) {
@@ -227,6 +227,7 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
         if (oocEngine != null) {
           oocEngine.activeThreadCheckIn();
         }
+        //载入分片
         vertexEdgeCount = vertexEdgeCount.incrVertexEdgeCount(
             loadInputSplit(serializedInputSplit));
         context.progress();
@@ -254,6 +255,11 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
           edgesPerSecond + " edges/sec");
     }
     try {
+      /**
+       * 将会调用该方法
+       * {@link org.apache.giraph.partition.PartitionStore#addPartition}
+       * {@link NettyWorkerClientRequestProcessor#flush}
+       */
       workerClientRequestProcessor.flush();
     } catch (IOException e) {
       throw new IllegalStateException("call: Flushing failed.", e);
@@ -275,7 +281,13 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    */
   private VertexEdgeCount loadInputSplit(byte[] serializedInputSplit)
       throws IOException, ClassNotFoundException, InterruptedException {
+    /**
+     * 获取输入分片，{@link org.apache.hadoop.mapreduce.lib.input.FileSplit}
+     */
     InputSplit inputSplit = getInputSplit(serializedInputSplit);
+    /**
+     * 读取分片，{@link VertexInputSplitsCallable#readInputSplit}
+     */
     VertexEdgeCount vertexEdgeCount = readInputSplit(inputSplit);
     if (LOG.isInfoEnabled()) {
       LOG.info("loadFromInputSplit: Finished loading " + vertexEdgeCount);

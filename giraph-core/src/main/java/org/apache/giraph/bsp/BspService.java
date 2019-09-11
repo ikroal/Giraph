@@ -215,6 +215,7 @@ public abstract class BspService<I extends WritableComparable,
   public BspService(
       Mapper<?, ?, ?, ?>.Context context,
       GraphTaskManager<I, V, E> graphTaskManager) {
+    //创建各种 Event 用于同步，向 Hadoop 报告各种事件进度，为什么同步还不知道
     this.connectedEvent = new PredicateLock(context);
     this.workerHealthRegistrationChanged = new PredicateLock(context);
     this.applicationAttemptChanged = new PredicateLock(context);
@@ -238,6 +239,7 @@ public abstract class BspService<I extends WritableComparable,
     this.conf = graphTaskManager.getConf();
 
     this.jobId = conf.getJobId();
+    //从配置文件中读取应当重启的超步(人工设定，可用于测试)，默认为 UNSET_SUPERSTEP，即不需要载入 checkpoint
     this.restartedSuperstep = conf.getLong(
         GiraphConstants.RESTART_SUPERSTEP, UNSET_SUPERSTEP);
     try {
@@ -245,11 +247,16 @@ public abstract class BspService<I extends WritableComparable,
     } catch (UnknownHostException e) {
       throw new RuntimeException(e);
     }
+    /**
+     * 创建工厂 {@link org.apache.giraph.partition.HashPartitionerFactory}
+     */
     this.graphPartitionerFactory = conf.createGraphPartitioner();
 
     basePath = ZooKeeperManager.getBasePath(conf) + BASE_DIR + "/" + jobId;
+    //作用暂时不清楚
     getContext().getCounter(GiraphConstants.ZOOKEEPER_BASE_PATH_COUNTER_GROUP,
         basePath);
+    //各种路径，可能用于日志？
     masterJobStatePath = basePath + MASTER_JOB_STATE_NODE;
     inputSplitsWorkerDonePath = basePath + INPUT_SPLITS_WORKER_DONE_DIR;
     inputSplitsAllDonePath = basePath + INPUT_SPLITS_ALL_DONE_NODE;
@@ -257,18 +264,22 @@ public abstract class BspService<I extends WritableComparable,
     cleanedUpPath = basePath + CLEANED_UP_DIR;
     kryoRegisteredClassPath = basePath + KRYO_REGISTERED_CLASS_DIR;
 
-
+    //目前默认情况为 null
     String restartJobId = RESTART_JOB_ID.get(conf);
 
+    //需要重启的 Job 的 checkpoint 保存路径
     savedCheckpointBasePath =
         CheckpointingUtils.getCheckpointBasePath(getConfiguration(),
             restartJobId == null ? getJobId() : restartJobId);
 
+    //当前 Job 的 checkPoint 的保存路径
     checkpointBasePath = CheckpointingUtils.
         getCheckpointBasePath(getConfiguration(), getJobId());
 
     masterElectionPath = basePath + MASTER_ELECTION_DIR;
+    //获取 Zookeeper 服务的地址和端口
     String serverPortList = graphTaskManager.getZookeeperList();
+    //一些目录暂时不知道怎么用
     haltComputationPath = basePath + HALT_COMPUTATION_NODE;
     memoryObserverPath = basePath + MEMORY_OBSERVER_DIR;
     getContext().getCounter(GiraphConstants.ZOOKEEPER_HALT_NODE_COUNTER_GROUP,
@@ -281,12 +292,14 @@ public abstract class BspService<I extends WritableComparable,
           ", partition " + conf.getTaskPartition() + " on " + serverPortList);
     }
     try {
+      //ZooKeeperExt 实例作用暂时未知，master 和 worker 上的作用，创建到 Zookeeper 的连接
       this.zk = new ZooKeeperExt(serverPortList,
                                  conf.getZooKeeperSessionTimeout(),
                                  conf.getZookeeperOpsMaxAttempts(),
                                  conf.getZookeeperOpsRetryWaitMsecs(),
                                  this,
                                  context);
+      //等待事件发生之后调用初始化传入的 context 调用 progress 方法向 hadoop 报告进度
       connectedEvent.waitForTimeoutOrFail(
           GiraphConstants.WAIT_ZOOKEEPER_TIMEOUT_MSEC.get(conf));
       this.fs = FileSystem.get(getConfiguration());
@@ -304,9 +317,11 @@ public abstract class BspService<I extends WritableComparable,
     this.hostnameTaskId = hostname + "_" + getTaskId();
 
     //Trying to restart from the latest superstep
+    //设置重启的相关信息，目前默认情况 restartJobId == null
     if (restartJobId != null &&
         restartedSuperstep == UNSET_SUPERSTEP) {
       try {
+        //restartedSuperstep == UNSET_SUPERSTEP 需要与上面的 get 对比，为什么？
         restartedSuperstep = getLastCheckpointedSuperstep();
       } catch (IOException e) {
         throw new RuntimeException(e);
@@ -694,6 +709,11 @@ public abstract class BspService<I extends WritableComparable,
 
   /**
    * Get the latest superstep and cache it.
+   * worker 运行过程中将会创建 {@link #getWorkerFinishedPath} 这样的路径，
+   * 也就是说每完成一个超步就会在 {@link #getSuperstepPath} 下创建一个超步文件夹
+   * 这样就可以根据 {@link #getSuperstepPath} 路径下的文件个数得出上一次计算结束的超步是多少
+   * (在 cachedSuperstep == UNSET_SUPERSTEP) 时。超步文件夹的创建可能在
+   * {@link org.apache.giraph.worker.BspServiceWorker#writeFinshedSuperstepInfoToZK} 完成
    *
    * @return the latest superstep
    */
@@ -709,6 +729,7 @@ public abstract class BspService<I extends WritableComparable,
           CreateMode.PERSISTENT,
           true);
     } catch (KeeperException.NodeExistsException e) {
+      //注意没有抛出异常
       if (LOG.isInfoEnabled()) {
         LOG.info("getApplicationAttempt: Node " +
             applicationAttemptsPath + " already exists!");
@@ -829,6 +850,10 @@ public abstract class BspService<I extends WritableComparable,
   public final void process(WatchedEvent event) {
     // 1. Process all shared events
     // 2. Process specific derived class events
+    //Zookeeper 中进行处理
+    /**
+     * {@link ZooKeeperExt} 构造函数传入 this
+     */
     if (LOG.isDebugEnabled()) {
       LOG.debug("process: Got a new event, path = " + event.getPath() +
           ", type = " + event.getType() + ", state = " +
@@ -927,6 +952,7 @@ public abstract class BspService<I extends WritableComparable,
    * @throws IOException
    */
   protected long getLastCheckpointedSuperstep() throws IOException {
+    //savedCheckpointBasePath 和 checkpointBasePath 区别
     return CheckpointingUtils.getLastCheckpointedSuperstep(getFs(),
         savedCheckpointBasePath);
   }

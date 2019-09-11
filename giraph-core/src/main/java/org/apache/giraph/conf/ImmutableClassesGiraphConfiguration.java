@@ -147,6 +147,7 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    */
   public ImmutableClassesGiraphConfiguration(Configuration conf) {
     super(conf);
+    //持有默认设置的类类型和用户设定的类类型，如计算类、输入格式类等
     classes = new GiraphClasses<I, V, E>(conf);
     useUnsafeSerialization = USE_UNSAFE_SERIALIZATION.get(this);
     useBigDataIOForMessages = USE_BIG_DATA_IO_FOR_MESSAGES.get(this);

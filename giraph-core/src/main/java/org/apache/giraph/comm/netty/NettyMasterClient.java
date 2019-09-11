@@ -18,8 +18,6 @@
 
 package org.apache.giraph.comm.netty;
 
-import java.io.IOException;
-
 import org.apache.giraph.bsp.CentralizedServiceMaster;
 import org.apache.giraph.comm.GlobalCommType;
 import org.apache.giraph.comm.MasterClient;
@@ -33,6 +31,8 @@ import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.util.Progressable;
+
+import java.io.IOException;
 
 /**
  * Netty implementation of {@link MasterClient}
@@ -75,6 +75,7 @@ public class NettyMasterClient implements MasterClient {
 
   @Override
   public void openConnections() {
+    //建立连接 service 指 BspServiceMaster
     nettyClient.connectAllAddresses(service.getWorkerInfoList());
   }
 

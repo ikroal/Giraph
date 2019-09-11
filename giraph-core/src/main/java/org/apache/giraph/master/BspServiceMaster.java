@@ -68,6 +68,7 @@ import org.apache.giraph.utils.JMapHistoDumper;
 import org.apache.giraph.utils.ReactiveJMapHistoDumper;
 import org.apache.giraph.utils.ReflectionUtils;
 import org.apache.giraph.utils.WritableUtils;
+import org.apache.giraph.worker.BspServiceWorker;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.giraph.zk.BspEvent;
 import org.apache.giraph.zk.PredicateLock;
@@ -196,6 +197,7 @@ public class BspServiceMaster<I extends WritableComparable,
       Mapper<?, ?, ?, ?>.Context context,
       GraphTaskManager<I, V, E> graphTaskManager) {
     super(context, graphTaskManager);
+    //实现的等待通知机制用于线程间的同步，后续观察，内部用 Java Lock 和 Condition 实现
     workerWroteCheckpoint = new PredicateLock(context);
     registerBspEvent(workerWroteCheckpoint);
     superstepStateChanged = new PredicateLock(context);
@@ -204,6 +206,7 @@ public class BspServiceMaster<I extends WritableComparable,
     ImmutableClassesGiraphConfiguration<I, V, E> conf =
         getConfiguration();
 
+    //都是用户设置的一系列参数
     maxWorkers = conf.getMaxWorkers();
     minWorkers = conf.getMinWorkers();
     maxNumberOfSupersteps = conf.getMaxNumberOfSupersteps();
@@ -211,6 +214,7 @@ public class BspServiceMaster<I extends WritableComparable,
     eventWaitMsecs = conf.getEventWaitMsecs();
     maxSuperstepWaitMsecs = conf.getMaxMasterSuperstepWaitMsecs();
     partitionLongTailMinPrint = PARTITION_LONG_TAIL_MIN_PRINT.get(conf);
+    //工厂模式创建分区者
     masterGraphPartitioner =
         getGraphPartitionerFactory().createMasterGraphPartitioner();
     if (conf.isJMapHistogramDumpEnabled()) {
@@ -219,15 +223,20 @@ public class BspServiceMaster<I extends WritableComparable,
     if (conf.isReactiveJmapHistogramDumpEnabled()) {
       conf.addMasterObserverClass(ReactiveJMapHistoDumper.class);
     }
+    //本地模式下运行只创建了一个长度为 0 的 MasterObserver 接口数组，jmap dumper 是啥？
+    //conf 设置 MasterObserver 的实现类 class，之后创建 observers
     observers = conf.createMasterObservers(context);
 
+    //设置 chekpoint 的一些配置
     this.checkpointFrequency = conf.getCheckpointFrequency();
     this.checkpointStatus = CheckpointStatus.NONE;
     this.checkpointSupportedChecker =
         ReflectionUtils.newInstance(
             GiraphConstants.CHECKPOINT_SUPPORTED_CHECKER.get(conf));
 
+    //观察者模式，好像用于重启superstep
     GiraphMetrics.get().addSuperstepResetObserver(this);
+    //用于统计暂时不管
     GiraphStats.init(context);
   }
 
@@ -498,6 +507,7 @@ public class BspServiceMaster<I extends WritableComparable,
     List<WorkerInfo> healthyWorkerInfoList = new ArrayList<WorkerInfo>();
     List<WorkerInfo> unhealthyWorkerInfoList = new ArrayList<WorkerInfo>();
     int totalResponses = -1;
+    //在 worker 重启情况下 master 也会等待一定时间等 worker 启动完成
     while (SystemTime.get().getMilliseconds() < failWorkerCheckMsecs) {
       getContext().progress();
       getAllWorkerInfos(
@@ -730,6 +740,7 @@ public class BspServiceMaster<I extends WritableComparable,
     LOG.info("Loading checkpoint from " + finalizedCheckpointPath);
     DataInputStream finalizedStream =
         fs.open(new Path(finalizedCheckpointPath));
+    //恢复全局状态
     GlobalStats globalStats = new GlobalStats();
     globalStats.readFields(finalizedStream);
     updateCounters(globalStats);
@@ -783,16 +794,21 @@ public class BspServiceMaster<I extends WritableComparable,
     // the checkpoint files.  Each checkpoint file will be an input split
     // and the input split
 
+    //从配置文件中读出需要恢复的 Superstep，如果不为初始值 UNSET_SUPERSTEP，则要进行设置
     if (getRestartedSuperstep() != UNSET_SUPERSTEP) {
       GiraphStats.getInstance().getSuperstepCounter().
         setValue(getRestartedSuperstep());
     }
+    //本地模式不执行
     for (MasterObserver observer : observers) {
       observer.preApplication();
       getContext().progress();
     }
   }
 
+  /**
+   * 为什么一定要 becomeMaster，前面已经选定了 master，是向 Zookeeper 注册吗
+   */
   @Override
   public boolean becomeMaster() {
     // Create my bid to become the master, then try to become the worker
@@ -813,6 +829,7 @@ public class BspServiceMaster<I extends WritableComparable,
       throw new IllegalStateException(
           "becomeMaster: IllegalStateException", e);
     }
+    //循环的意义在哪？是为了等待所有信息准备完毕吗？
     while (true) {
       JSONObject jobState = getJobState();
       try {
@@ -838,28 +855,36 @@ public class BspServiceMaster<I extends WritableComparable,
               masterChildArr.get(0) + "' and my bid is '" +
               myBid + "'");
         }
+        //masterChildArr 从 Zookeeper 拿到，myBid 本机生成，如果相同则表明成为了 master
         if (masterChildArr.get(0).equals(myBid)) {
+          //设置 master 的分区ID，应该是全局设置，因为 setValue 最终调用的是 hadoop 的 Counter
           GiraphStats.getInstance().getCurrentMasterTaskPartition().
               setValue(getTaskId());
 
+          //处理 master 的一切信息交流
           globalCommHandler = new MasterGlobalCommHandler(
               new MasterAggregatorHandler(getConfiguration(), getContext()),
               new MasterInputSplitsHandler(
                   getConfiguration().useInputSplitLocality(), getContext()));
+          //Aggregators 机制，设置具体的 Aggregator ，以及 Aggregator 的处理类
           aggregatorTranslation = new AggregatorToGlobalCommTranslation(
               getConfiguration(), globalCommHandler);
 
           globalCommHandler.getAggregatorHandler().initialize(this);
+          //DefaultMasterCompute 对象，与 workers 的 aggregators 相关
           masterCompute = getConfiguration().createMasterCompute();
           masterCompute.setMasterService(this);
 
+          //给 worker 的相关信息
           masterInfo = new MasterInfo();
+          //接收来自 Worker 的信息的对象
           masterServer =
               new NettyMasterServer(getConfiguration(), this, getContext(),
                   getGraphTaskManager().createUncaughtExceptionHandler());
           masterInfo.setInetSocketAddress(masterServer.getMyAddress(),
               masterServer.getLocalHostOrIp());
           masterInfo.setTaskId(getTaskId());
+          //向 Worker 发送信息的对象
           masterClient =
               new NettyMasterClient(getContext(), getConfiguration(), this,
                   getGraphTaskManager().createUncaughtExceptionHandler());
@@ -872,9 +897,12 @@ public class BspServiceMaster<I extends WritableComparable,
           return isMaster;
         }
         LOG.info("becomeMaster: Waiting to become the master...");
+        //等待 master 选举事件发生变化，事件处理完成在 BspService 中的 process
+        // （Zookeeper 会调用该方法）
         getMasterElectionChildrenChangedEvent().waitForTimeoutOrFail(
             GiraphConstants.WAIT_ZOOKEEPER_TIMEOUT_MSEC.get(
                 getConfiguration()));
+        //发生之后即重置，为什么需要重置还不清楚
         getMasterElectionChildrenChangedEvent().reset();
       } catch (KeeperException e) {
         throw new IllegalStateException(
@@ -1061,21 +1089,30 @@ public class BspServiceMaster<I extends WritableComparable,
     // <used file prefix 0><used file prefix 1>...
     // <aggregator data>
     // <masterCompute data>
+    //本地写检查点
     FSDataOutputStream finalizedOutputStream =
         getFs().create(finalizedCheckpointPath);
 
+    //该路径下存储了 globalState 以及 superstep classes
     String superstepFinishedNode =
         getSuperstepFinishedPath(getApplicationAttempt(), superstep - 1);
+    //写入相关信息
     finalizedOutputStream.write(
         getZkExt().getData(superstepFinishedNode, false, null));
 
+    //写入 chosenWorkerInfoList 数目，这里是经过 check 的 healthy worker
     finalizedOutputStream.writeInt(chosenWorkerInfoList.size());
+    //写入 checkpoint 基础路径
     finalizedOutputStream.writeUTF(getCheckpointBasePath(superstep));
     for (WorkerInfo chosenWorkerInfo : chosenWorkerInfoList) {
+      //写入 worker 的 ID
       finalizedOutputStream.writeInt(getWorkerId(chosenWorkerInfo));
     }
+
+    //写入和 aggregator 相关的信息
     globalCommHandler.getAggregatorHandler().write(finalizedOutputStream);
     aggregatorTranslation.write(finalizedOutputStream);
+    //masterCompute 写入
     masterCompute.write(finalizedOutputStream);
     finalizedOutputStream.close();
     lastCheckpointedSuperstep = superstep;
@@ -1092,6 +1129,10 @@ public class BspServiceMaster<I extends WritableComparable,
   private void assignPartitionOwners() {
     Collection<PartitionOwner> partitionOwners;
     if (getSuperstep() == INPUT_SUPERSTEP) {
+      /**
+       * {@link org.apache.giraph.partition.MasterGraphPartitionerImpl]
+       * {@link BasicPartitionOwner}
+       */
       partitionOwners =
           masterGraphPartitioner.createInitialPartitionOwners(
               chosenWorkerInfoList, maxWorkers);
@@ -1102,6 +1143,7 @@ public class BspServiceMaster<I extends WritableComparable,
     } else if (getRestartedSuperstep() == getSuperstep()) {
       // If restarted, prepare the checkpoint restart
       try {
+        //从 checkpoint 恢复 partitionOwner
         partitionOwners = prepareCheckpointRestart(getSuperstep());
       } catch (IOException e) {
         throw new IllegalStateException(
@@ -1116,6 +1158,7 @@ public class BspServiceMaster<I extends WritableComparable,
       }
       masterGraphPartitioner.setPartitionOwners(partitionOwners);
     } else {
+      //平衡每个 worker 处理的 partition，修改对应的 PartitionOwner，将会在 Worker 中继续处理
       partitionOwners =
           masterGraphPartitioner.generateChangedPartitionOwners(
               allPartitionStatsList,
@@ -1152,12 +1195,14 @@ public class BspServiceMaster<I extends WritableComparable,
       }
     }
 
+    //传输信息的类
     AddressesAndPartitionsWritable addressesAndPartitions =
         new AddressesAndPartitionsWritable(masterInfo, chosenWorkerInfoList,
             partitionOwners);
     // Send assignments to every worker
     // TODO for very large number of partitions we might want to split this
     // across multiple requests
+    //得到 partition 数目和对应的 Task 信息之后，向 worker 发送读取 partition 请求
     for (WorkerInfo workerInfo : chosenWorkerInfoList) {
       masterClient.sendWritableRequest(workerInfo.getTaskId(),
           new AddressesAndPartitionsRequest(addressesAndPartitions));
@@ -1211,7 +1256,9 @@ public class BspServiceMaster<I extends WritableComparable,
     // Process:
     // 1. Increase the application attempt and set to the correct checkpoint
     // 2. Send command to all workers to restart their tasks
+    //更新状态，并且在 Zookeeper 创建对应节点
     setApplicationAttempt(getApplicationAttempt() + 1);
+    //cachedSuperstep == restartedSuperstep 时将会恢复
     setCachedSuperstep(checkpoint);
     setRestartedSuperstep(checkpoint);
     checkpointStatus = CheckpointStatus.NONE;
@@ -1244,8 +1291,12 @@ public class BspServiceMaster<I extends WritableComparable,
   public long getLastGoodCheckpoint() throws IOException {
     // Find the last good checkpoint if none have been written to the
     // knowledge of this master
+    /**
+     * {@link #finalizeCheckpoint(long, List)} 在该函数中进行赋值
+     */
     if (lastCheckpointedSuperstep == -1) {
       try {
+        //从保存的 checkpoint 文件名中获取上次 checkpoint 的超步
         lastCheckpointedSuperstep = getLastCheckpointedSuperstep();
       } catch (IOException e) {
         LOG.fatal("getLastGoodCheckpoint: No last good checkpoints can be " +
@@ -1294,6 +1345,10 @@ public class BspServiceMaster<I extends WritableComparable,
     for (WorkerInfo workerInfo : workerInfoList) {
       hostnameIdList.add(workerInfo.getHostnameId());
     }
+    /**
+     * 从 Zookeeper 中获取健康 worker 信息，worker 出现运行时异常时将会调用
+     * {@link BspServiceWorker#unregisterHealth} 进行反注册，由此可以判断超步是否正常结束
+     */
     String workerInfoHealthyPath =
         getWorkerInfoHealthyPath(getApplicationAttempt(), getSuperstep());
     List<String> finishedHostnameIdList = new ArrayList<>();
@@ -1568,12 +1623,14 @@ public class BspServiceMaster<I extends WritableComparable,
       getContext().progress();
     }
 
+    //获得 healthy worker 信息
     chosenWorkerInfoList = checkWorkers();
     if (chosenWorkerInfoList == null) {
       setJobStateFailed("coordinateSuperstep: Not enough healthy workers for " +
                     "superstep " + getSuperstep());
     } else {
       // Sort this list, so order stays the same over supersteps
+      //按照 Worker 的 TaskId 进行排序
       Collections.sort(chosenWorkerInfoList, new Comparator<WorkerInfo>() {
         @Override
         public int compare(WorkerInfo wi1, WorkerInfo wi2) {
@@ -1594,15 +1651,20 @@ public class BspServiceMaster<I extends WritableComparable,
     }
 
     // We need to finalize aggregators from previous superstep
+    //aggregators 机制
     if (getSuperstep() >= 0) {
       aggregatorTranslation.postMasterCompute();
       globalCommHandler.getAggregatorHandler().finishSuperstep();
     }
 
+    //根据 WorkerInfo 建立与 Woker 的连接
     masterClient.openConnections();
 
+    //记录 Worker 统计信息
     GiraphStats.getInstance().
         getCurrentWorkers().setValue(chosenWorkerInfoList.size());
+    //分区计算，得到 partition ID 和 Task ID 配对信息，
+    // 向 worker 发送相关信息供 worker 读取 partition
     assignPartitionOwners();
 
     // Finalize the valid checkpoint file prefixes and possibly
@@ -1612,6 +1674,7 @@ public class BspServiceMaster<I extends WritableComparable,
           getWorkerWroteCheckpointPath(getApplicationAttempt(),
               getSuperstep());
       // first wait for all the workers to write their checkpoint data
+      //等待 worker 写完 checkpoint，出现问题则返回超步失败
       if (!barrierOnWorkerList(workerWroteCheckpointPath,
           chosenWorkerInfoList,
           getWorkerWroteCheckpointEvent(),
@@ -1619,6 +1682,7 @@ public class BspServiceMaster<I extends WritableComparable,
         return SuperstepState.WORKER_FAILURE;
       }
       try {
+        //写检查点
         finalizeCheckpoint(getSuperstep(), chosenWorkerInfoList);
       } catch (IOException e) {
         throw new IllegalStateException(
@@ -1647,6 +1711,7 @@ public class BspServiceMaster<I extends WritableComparable,
         chosenWorkerInfoList,
         getSuperstepStateChangedEvent(),
         false)) {
+      //返回这个将会需要 restartFromCheckpoint
       return SuperstepState.WORKER_FAILURE;
     }
 
@@ -1661,7 +1726,9 @@ public class BspServiceMaster<I extends WritableComparable,
 
     // If the master is halted or all the vertices voted to halt and there
     // are no more messages in the system, stop the computation
+    //收集所有 worker 状态
     GlobalStats globalStats = aggregateWorkerStats(getSuperstep());
+    //判断是否满足计算终止条件，两种条件
     if (masterCompute.isHalted() ||
         (globalStats.getFinishedVertexCount() ==
         globalStats.getVertexCount() &&
@@ -1676,6 +1743,7 @@ public class BspServiceMaster<I extends WritableComparable,
 
     // If we have completed the maximum number of supersteps, stop
     // the computation
+    //超过设置的最大超步，第一个判断是设置过最大超步
     if (maxNumberOfSupersteps !=
         GiraphConstants.MAX_NUMBER_OF_SUPERSTEPS.getDefaultValue() &&
         (getSuperstep() == maxNumberOfSupersteps - 1)) {
@@ -1690,34 +1758,48 @@ public class BspServiceMaster<I extends WritableComparable,
     // match) and if the computation is halted, no need to check any of
     // the types.
     if (!globalStats.getHaltComputation()) {
+      //验证传入的 Computation 类的类型是否符合设置的类型
       superstepClasses.verifyTypesMatch(getSuperstep() > 0);
     }
     getConfiguration().updateSuperstepClasses(superstepClasses);
 
     //Signal workers that we want to checkpoint
+    //获得当前的 checkpoint 状态
     checkpointStatus = getCheckpointStatus(getSuperstep() + 1);
+    //设置为全局状态
     globalStats.setCheckpointStatus(checkpointStatus);
     // Let everyone know the aggregated application state through the
     // superstep finishing znode.
+    //该路径下将会写入 globalStats 和 superstepClasses，checkpoint 时会用到
+    //同时 worker 也会检测该路径，判断超步是否正常结束
     String superstepFinishedNode =
         getSuperstepFinishedPath(getApplicationAttempt(), getSuperstep());
 
     WritableUtils.writeToZnode(
         getZkExt(), superstepFinishedNode, -1, globalStats, superstepClasses);
+    //更新一些状态的计数
     updateCounters(globalStats);
 
+    //清除上一步超步信息，当前超步暂时保留
     cleanUpOldSuperstep(getSuperstep() - 1);
+    //缓存超步计数 +1
     incrCachedSuperstep();
     // Counter starts at zero, so no need to increment
     if (getSuperstep() > 0) {
+      //超步计数 +1
       GiraphStats.getInstance().getSuperstepCounter().increment();
     }
     SuperstepState superstepState;
+    //查看 Job 是否已经完成
     if (globalStats.getHaltComputation()) {
       superstepState = SuperstepState.ALL_SUPERSTEPS_DONE;
     } else {
       superstepState = SuperstepState.THIS_SUPERSTEP_DONE;
     }
+    /**
+     * {@link org.apache.giraph.aggregators.TextAggregatorWriter#writeAggregator(Iterable, long)}
+     * 尝试写入 Aggregators，
+     */
     globalCommHandler.getAggregatorHandler().writeAggregators(
         getSuperstep(), superstepState);
 
@@ -1734,8 +1816,10 @@ public class BspServiceMaster<I extends WritableComparable,
    */
   private CheckpointStatus getCheckpointStatus(long superstep) {
     try {
+      //用户创建 FORCE_CHECKPOINT_USER_FLAG 的标志文件，表明 job 应当停止
       if (getZkExt().
           exists(basePath + FORCE_CHECKPOINT_USER_FLAG, false) != null) {
+        //默认为 true
         if (isCheckpointingSupported(getConfiguration(), masterCompute)) {
           return CheckpointStatus.CHECKPOINT_AND_HALT;
         } else {
@@ -1750,16 +1834,21 @@ public class BspServiceMaster<I extends WritableComparable,
       throw new IllegalStateException(
           "cleanupZooKeeper: Got IllegalStateException", e);
     }
+    //0 意味着不用做 checkpoint
     if (checkpointFrequency == 0) {
       return CheckpointStatus.NONE;
     }
+    //默认的第一次 checkpont 是 0
     long firstCheckpoint = INPUT_SUPERSTEP + 1;
+    //如果是重启过程则需要计算 firstCheckpoint
     if (getRestartedSuperstep() != UNSET_SUPERSTEP) {
       firstCheckpoint = getRestartedSuperstep() + checkpointFrequency;
     }
+    //还未到做 checkpoint 时候
     if (superstep < firstCheckpoint) {
       return CheckpointStatus.NONE;
     }
+    //距 firstCheckpoint 的次数能够整除 checkpointFrequency 时进行 checkpoint
     if (((superstep - firstCheckpoint) % checkpointFrequency) == 0) {
       if (isCheckpointingSupported(getConfiguration(), masterCompute)) {
         return CheckpointStatus.CHECKPOINT;
@@ -1787,6 +1876,7 @@ public class BspServiceMaster<I extends WritableComparable,
   /**
    * This doMasterCompute is only called
    * after masterCompute is initialized
+   * Aggregate 相关
    */
   private void doMasterCompute() {
     GiraphTimerContext timerContext = masterComputeTimer.time();
@@ -1895,6 +1985,7 @@ public class BspServiceMaster<I extends WritableComparable,
 
   @Override
   public void postSuperstep() {
+    //观察者模式进行通知
     for (MasterObserver observer : observers) {
       observer.postSuperstep(getSuperstep());
       getContext().progress();
@@ -1924,6 +2015,7 @@ public class BspServiceMaster<I extends WritableComparable,
     // znode.  Once the number of znodes equals the number of partitions
     // for workers and masters, the master will clean up the ZooKeeper
     // znodes associated with this job.
+    //作用是什么？？
     String masterCleanedUpPath = cleanedUpPath  + "/" +
         getTaskId() + MASTER_SUFFIX;
     try {
@@ -1948,12 +2040,14 @@ public class BspServiceMaster<I extends WritableComparable,
       LOG.error("cleanup: Got InterruptedException, continuing", e);
     }
 
+    //应该和 becomeMaster 有关
     if (isMaster) {
       getGraphTaskManager().setIsMaster(true);
       cleanUpZooKeeper();
       // If desired, cleanup the checkpoint directory
       if (superstepState == SuperstepState.ALL_SUPERSTEPS_DONE &&
           GiraphConstants.CLEANUP_CHECKPOINTS_AFTER_SUCCESS.get(conf)) {
+        //删除 checkpoint
         boolean success =
             getFs().delete(new Path(checkpointBasePath), true);
         if (LOG.isInfoEnabled()) {
@@ -1970,6 +2064,7 @@ public class BspServiceMaster<I extends WritableComparable,
             "Killing this job."));
       }
       globalCommHandler.getAggregatorHandler().close();
+      //关闭连接
       masterClient.closeConnections();
       masterServer.close();
     }

@@ -17,18 +17,11 @@
  */
 package org.apache.giraph.worker;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
-
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.GlobalCommType;
-import org.apache.giraph.comm.aggregators.AggregatorUtils;
-import org.apache.giraph.comm.aggregators.AllAggregatorServerData;
-import org.apache.giraph.comm.aggregators.GlobalCommValueOutputStream;
-import org.apache.giraph.comm.aggregators.OwnerAggregatorServerData;
-import org.apache.giraph.comm.aggregators.WorkerAggregatorRequestProcessor;
+import org.apache.giraph.comm.aggregators.*;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.reducers.ReduceOperation;
 import org.apache.giraph.reducers.Reducer;
@@ -39,8 +32,10 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
+import java.io.IOException;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 
 /** Handler for reduce/broadcast on the workers */
 public class WorkerAggregatorHandler implements WorkerThreadGlobalCommUsage {
@@ -141,6 +136,7 @@ public class WorkerAggregatorHandler implements WorkerThreadGlobalCommUsage {
     if (LOG.isDebugEnabled()) {
       LOG.debug("prepareSuperstep: Start preparing aggregators");
     }
+    //从 master 和 worker 获取之前超步的 aggregator 值
     AllAggregatorServerData allGlobalCommData =
         serviceWorker.getServerData().getAllAggregatorData();
     // Wait for my aggregators
@@ -155,6 +151,7 @@ public class WorkerAggregatorHandler implements WorkerThreadGlobalCommUsage {
           "IOException occurred while trying to distribute aggregators", e);
     }
     // Wait for all other aggregators and store them
+    //关键步骤
     allGlobalCommData.fillNextSuperstepMapsWhenReady(
         getOtherWorkerIdsSet(), broadcastedMap,
         reducerMap);

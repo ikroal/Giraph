@@ -18,18 +18,10 @@
 
 package org.apache.giraph.yarn;
 
-import static org.apache.hadoop.mapreduce.lib.output.FileOutputFormat.OUTDIR;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.Properties;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import junit.framework.Assert;
 import org.apache.commons.io.FileUtils;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
-import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.BasicComputation;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.io.formats.GiraphFileInputFormat;
@@ -39,15 +31,23 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.server.MiniYARNCluster;
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.server.ServerConfig;
 import org.apache.zookeeper.server.ZooKeeperServerMain;
 import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
-
 import org.junit.Test;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import static org.apache.hadoop.mapreduce.lib.output.FileOutputFormat.OUTDIR;
+
+//import org.apache.hadoop.yarn.server.MiniYARNCluster;
 
 
 /**
@@ -101,7 +101,7 @@ public class TestYarnJob implements Watcher {
   /** Counter for # of znode events during integration test */
   private int zkEventCount = 0;
   /** Our YARN test cluster for local integration test */
-  private MiniYARNCluster cluster = null;
+//  private MiniYARNCluster cluster = null;
 
   @Test
   public void testPureYarnJob() {
@@ -117,7 +117,7 @@ public class TestYarnJob implements Watcher {
     } finally {
       zookeeper.end();
       exec.shutdown();
-      cluster.stop();
+//      cluster.stop();
       deleteTempDirectories();
     }
   }
@@ -268,9 +268,9 @@ public class TestYarnJob implements Watcher {
    * Initialize the MiniYARNCluster for the integration test.
    */
   private void initYarnCluster() {
-    cluster = new MiniYARNCluster(TestYarnJob.class.getName(), 1, 1, 1);
+    /*cluster = new MiniYARNCluster(TestYarnJob.class.getName(), 1, 1, 1);
     cluster.init(new ImmutableClassesGiraphConfiguration(conf));
-    cluster.start();
+    cluster.start();*/
   }
 
   /**

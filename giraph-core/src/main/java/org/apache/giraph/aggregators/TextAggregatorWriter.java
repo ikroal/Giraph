@@ -19,14 +19,15 @@
 package org.apache.giraph.aggregators;
 
 import com.google.common.base.Charsets;
-import java.io.IOException;
-import java.util.Map.Entry;
 import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Mapper.Context;
+
+import java.io.IOException;
+import java.util.Map.Entry;
 
 /**
  * Default implementation of {@link AggregatorWriter}. Each line consists of
@@ -79,7 +80,11 @@ public class TextAggregatorWriter
   public void writeAggregator(
       Iterable<Entry<String, Writable>> aggregatorMap,
       long superstep) throws IOException {
+    //根据设定的条件判断是否需要将 aggregatorMap 写入文件当中
     if (shouldWrite(superstep)) {
+      /**
+       *  aggregatorMap 保存的可能是 {@link AggregatorReduceOperation}
+       */
       for (Entry<String, Writable> entry : aggregatorMap) {
         byte[] bytes = aggregatorToString(entry.getKey(), entry.getValue(),
             superstep).getBytes(Charsets.UTF_8);

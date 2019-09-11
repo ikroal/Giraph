@@ -65,6 +65,9 @@ public class DiskBackedPartitionStore<I extends WritableComparable,
   /** Job context (for progress) */
   private final Mapper<?, ?, ?, ?>.Context context;
   /** In-memory partition store */
+  /**
+   * {@link org.apache.giraph.partition.SimplePartitionStore}
+   */
   private final PartitionStore<I, V, E> partitionStore;
   /**
    * Keeps number of vertices in partitions, right when they are last spilled

@@ -18,14 +18,14 @@
 
 package org.apache.giraph.partition;
 
+import org.apache.giraph.conf.ImmutableClassesGiraphConfigurable;
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.worker.WorkerInfo;
+
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.Map;
-
-import org.apache.giraph.conf.ImmutableClassesGiraphConfigurable;
-import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.worker.WorkerInfo;
 
 /**
  * Basic partition owner, can be subclassed for more complicated partition
@@ -51,7 +51,7 @@ public class BasicPartitionOwner implements PartitionOwner,
 
   /**
    * Constructor with partition id and worker info.
-   *
+   * 确定了 partition ID 所对应的 worker 信息
    * @param partitionId Partition id of this partition.
    * @param workerInfo Owner of the partition.
    */

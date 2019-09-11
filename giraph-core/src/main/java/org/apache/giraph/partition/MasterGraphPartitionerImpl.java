@@ -18,16 +18,15 @@
 
 package org.apache.giraph.partition;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-
+import com.google.common.collect.Lists;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
-import com.google.common.collect.Lists;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * Abstracts and implements all MasterGraphPartitioner logic on top of a single
@@ -59,6 +58,7 @@ public abstract class MasterGraphPartitionerImpl<I extends WritableComparable,
   @Override
   public Collection<PartitionOwner> createInitialPartitionOwners(
       Collection<WorkerInfo> availableWorkerInfos, int maxWorkers) {
+    //计算 Partition 的数目，从用户指定的值或者预设的值（还需要乘以系数）中选择最大值
     int partitionCount = PartitionUtils.computePartitionCount(
         availableWorkerInfos.size(), conf);
     ArrayList<WorkerInfo> workerList =
@@ -66,6 +66,7 @@ public abstract class MasterGraphPartitionerImpl<I extends WritableComparable,
 
     partitionOwnerList = new ArrayList<PartitionOwner>();
     for (int i = 0; i < partitionCount; i++) {
+      //默认情况下是 Hash 配对，通过 getWorkerIndex 得到对应的 woker id，然后取出 WorkInfo
       partitionOwnerList.add(new BasicPartitionOwner(i, workerList.get(
           getWorkerIndex(i, partitionCount, workerList.size()))));
     }
@@ -99,6 +100,7 @@ public abstract class MasterGraphPartitionerImpl<I extends WritableComparable,
   }
 
   /**
+   * 默认情况下参考 {@link HashPartitionerFactory#getPartition(WritableComparable, int, int)}
    * Calculates worker that should be responsible for passed partition.
    *
    * @param partition Current partition
